@@ -9,7 +9,12 @@ interface ITreasury {
         RemoveStrategy
     }
 
-    function execute(Action action, bytes memory data) external returns (bool);
+    struct TreasuryCall {
+        Action action;
+        bytes data;
+    }
 
-    function executeBatch(Action[] memory actions, bytes[] memory data) external returns (bool);
+    function execute(TreasuryCall memory) external returns (bool);
+
+    function executeBatch(TreasuryCall[] memory) external returns (bool);
 }

@@ -12,5 +12,8 @@ interface IControllerFactory {
         address auctionFactory;
         address tokenFactory;
         address treasuryFactory;
+        address borrowerFactory;
     }
+
+    function createController(ControllerConfig memory config) external returns (address);
 }

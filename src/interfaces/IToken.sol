@@ -10,9 +10,12 @@ interface IToken is IERC20 {
     }
 
     function prices() external view returns (AssetValue[] memory);
+    function price(address) external view returns (uint256);
     function assets() external view returns (address[] memory);
     function addAsset(address) external;
     function burn(address, uint256) external;
     function redeem(address, uint256) external;
+    function fulfillBorrow(address, address, uint256) external;
+    function addBorrower(address) external;
     function MAX_SUPPLY() external view returns (uint256);
 }

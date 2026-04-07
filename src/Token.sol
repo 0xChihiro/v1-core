@@ -4,8 +4,11 @@ pragma solidity 0.8.34;
 import {ERC20} from "openzeppelin/token/ERC20/ERC20.sol";
 import {IToken} from "./interfaces/IToken.sol";
 import {ITokenFactory} from "./interfaces/factories/ITokenFactory.sol";
+import {IBorrower} from "./interfaces/IBorrower.sol";
+import {SafeERC20} from "openzeppelin/token/ERC20/utils/SafeERC20.sol";
 
 contract Token is ERC20, IToken {
+    using SafeERC20 for IToken;
     uint256 public immutable MAX_SUPPLY;
     address public immutable CONTROLLER;
 
@@ -17,6 +20,7 @@ contract Token is ERC20, IToken {
     event Token__Redeem(address indexed to, uint256 redeemedAmount, IToken.AssetValue[] values);
 
     error Token__BorrowerInitialized();
+    error Token__OnlyBorrower();
     error Token__BorrowerZeroAddress();
     error Token__BurnBalance();
     error Token__ControllerMisconfigured();
@@ -47,6 +51,8 @@ contract Token is ERC20, IToken {
         emit Token__Mint(account, amount);
     }
 
+    // Burn before changes redeemption price. Burn after getting prices, then send tokens
+    // after burning
     function redeem(address account, uint256 amount) external {
         if (msg.sender != CONTROLLER) revert Token__ControllerOnly();
         if (amount > balanceOf(account)) revert Token__RedeemBalance();
@@ -81,18 +87,30 @@ contract Token is ERC20, IToken {
         borrower = _borrower;
     }
 
+    function fulfillBorrow(address asset, address to, uint256 amount) external {
+        if (msg.sender != borrower) revert Token__OnlyBorrower();
+        IToken(asset).safeTransfer(to, amount);
+    }
+
     function assets() external view returns (address[] memory) {
         return _assets;
     }
 
     function prices() public view returns (IToken.AssetValue[] memory values) {
+        values = new IToken.AssetValue[](_assets.length);
         for (uint256 i = 0; i < _assets.length; i++) {
-            uint256 value = IToken(_assets[i]).balanceOf(address(this)) * 1e18 / totalSupply();
+            uint256 borrowed = borrower == address(0) ? 0 : IBorrower(borrower).totalBorrows(_assets[i]);
+            uint256 value = (IToken(_assets[i]).balanceOf(address(this)) + borrowed) * 1e18 / totalSupply();
             values[i] = IToken.AssetValue({asset: _assets[i], value: value});
         }
     }
 
+    function price(address asset) external view returns (uint256) {
+        return _price(asset);
+    }
+
     function _price(address asset) internal view returns (uint256) {
-        return IToken(asset).balanceOf(address(this)) * 1e18 / totalSupply();
+        uint256 borrowed = borrower == address(0) ? 0 : IBorrower(borrower).totalBorrows(asset);
+        return (IToken(asset).balanceOf(address(this)) + borrowed) * 1e18 / totalSupply();
     }
 }

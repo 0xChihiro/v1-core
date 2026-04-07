@@ -81,11 +81,17 @@ contract Auction is IAuction {
         return IToken(TOKEN).prices();
     }
 
+    function getRemaining() external view returns (uint256, uint256) {
+        uint256 timeRemaining =
+            block.timestamp > epochStart + EPOCH_PERIOD ? 0 : epochStart + EPOCH_PERIOD - block.timestamp;
+        return (timeRemaining, remainingLot);
+    }
+
     function getPrices(uint256 amount) public view returns (IControllerCallback.CallbackValue[] memory values) {
         IToken.AssetValue[] memory prices = _startPrices;
+        values = new IControllerCallback.CallbackValue[](prices.length);
         uint256 timePassed = block.timestamp - epochStart;
         if (timePassed > EPOCH_PERIOD) {
-            values[0] = IControllerCallback.CallbackValue({asset: address(0), value: 0});
             return values;
         }
         uint256 scalarDifference = AUCTION_SCALAR - MIN_AUCTION_SCALAR;
