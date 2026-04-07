@@ -85,6 +85,7 @@ contract Controller is AccessControl, IControllerCallback {
 
     function initializeAuction(IAuctionFactory.AuctionConfig memory config) external {
         if (auction != address(0)) revert Controller__AuctionInitialized();
+        config.minAuctionScalar = _calculateMinScalar();
         config.controller = address(this);
         auction = IAuctionFactory(AUCTION_FACTORY).createAuction(config);
     }
@@ -152,5 +153,9 @@ contract Controller is AccessControl, IControllerCallback {
     function _transfer(address asset, address to, uint256 amount) internal {
         bool success = IToken(asset).transfer(to, amount);
         require(success);
+    }
+
+    function _calculateMinScalar() internal view returns (uint256) {
+        return (1e18 * FEE_DIVISOR + BACKING_FEE - 1) / BACKING_FEE;
     }
 }

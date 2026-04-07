@@ -89,7 +89,7 @@ contract Auction is IAuction {
             return values;
         }
         uint256 scalarDifference = AUCTION_SCALAR - MIN_AUCTION_SCALAR;
-        uint256 scalar = scalarDifference - scalarDifference * timePassed / EPOCH_PERIOD;
+        uint256 scalar = AUCTION_SCALAR - scalarDifference * timePassed / EPOCH_PERIOD;
         for (uint256 i = 0; i < prices.length; i++) {
             uint256 amountPerToken = scalar * prices[i].value / 1e18;
             values[i] =
