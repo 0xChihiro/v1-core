@@ -49,6 +49,8 @@ contract AuctionTokenMock is ERC20, IToken {
 
     function addBorrower(address) external {}
 
+    function mint(address, uint256) external {}
+
     function burn(address, uint256) external {}
 
     function redeem(address, uint256) external {}

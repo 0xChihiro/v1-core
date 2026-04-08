@@ -7,6 +7,8 @@ interface ITokenFactory {
         string symbol;
         address controller;
         uint256 maxSupply;
+        address preMintReceiver;
+        uint256 preMintAmount;
     }
 
     function createToken(TokenConfig memory config) external returns (address);

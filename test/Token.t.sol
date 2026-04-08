@@ -49,7 +49,6 @@ contract TokenTest is Test {
         borrower = new BorrowerMock();
 
         token = new Token(_config(type(uint256).max));
-        token.mint(USER, SUPPLY);
 
         asset.mint(address(this), ASSET_BALANCE);
         asset.transfer(address(token), ASSET_BALANCE);
@@ -120,7 +119,7 @@ contract TokenTest is Test {
     function test_redeemTransfersAssetsUsingCurrentRedemptionMath() public {
         token.addAsset(address(asset));
         uint256 redeemAmount = 10e18;
-        uint256 expectedPayout = redeemAmount * (ASSET_BALANCE * 1e18 / (SUPPLY - redeemAmount)) / 1e18;
+        uint256 expectedPayout = redeemAmount * (ASSET_BALANCE * 1e18 / SUPPLY) / 1e18;
 
         token.redeem(USER, redeemAmount);
 
@@ -276,7 +275,13 @@ contract TokenTest is Test {
     }
 
     function _config(uint256 maxSupply) internal view returns (ITokenFactory.TokenConfig memory config) {
-        config =
-            ITokenFactory.TokenConfig({name: "Enten", symbol: "ENT", controller: address(this), maxSupply: maxSupply});
+        config = ITokenFactory.TokenConfig({
+            name: "Enten",
+            symbol: "ENT",
+            controller: address(this),
+            maxSupply: maxSupply,
+            preMintReceiver: USER,
+            preMintAmount: maxSupply < SUPPLY ? maxSupply : SUPPLY
+        });
     }
 }

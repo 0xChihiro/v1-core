@@ -13,6 +13,7 @@ interface IToken is IERC20 {
     function price(address) external view returns (uint256);
     function assets() external view returns (address[] memory);
     function addAsset(address) external;
+    function mint(address, uint256) external;
     function burn(address, uint256) external;
     function redeem(address, uint256) external;
     function fulfillBorrow(address, address, uint256) external;

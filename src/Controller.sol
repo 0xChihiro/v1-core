@@ -54,6 +54,7 @@ contract Controller is AccessControl, IControllerCallback {
     error Controller__FeeOutOfRange();
     error Controller__FeeSumInvalid();
     error Controller__BorrowerConfiguration();
+    error Controller__AuctionOngoing();
 
     constructor(IControllerFactory.ControllerConfig memory config) {
         if (config.admin == address(0)) revert Controller__AdminMisconfigured();
@@ -118,7 +119,8 @@ contract Controller is AccessControl, IControllerCallback {
 
     /* AUCTION FUNCTIONS*/
     function buy(uint256 amount, uint256 deadline, uint256 epochId) external {
-        IAuction(auction).bid(amount, deadline, epochId, msg.sender);
+        uint256 mintAmount = IAuction(auction).bid(amount, deadline, epochId, msg.sender);
+        IToken(token).mint(msg.sender, mintAmount);
     }
 
     function finalizeBuy(IControllerCallback.CallbackValue[] memory values, address account) external returns (bool) {
@@ -132,7 +134,7 @@ contract Controller is AccessControl, IControllerCallback {
 
     /* Start the next auction and distribute previous auction profits*/
     function startNextAuction() external onlyRole(AUCTIONEER_ROLE) {
-        if (token == address(0)) revert Controller__NotInitialized();
+        if (token == address(0) || auction == address(0)) revert Controller__NotInitialized();
         address[] memory assets = IToken(token).assets();
         for (uint256 i = 0; i < assets.length; i++) {
             _split(assets[i], IToken(assets[i]).balanceOf(address(this)));
@@ -154,8 +156,9 @@ contract Controller is AccessControl, IControllerCallback {
     }
 
     function addAsset(address asset) external onlyRole(TOKEN_ROLE) {
-        if (IToken(token).assets().length == MAX_ASSETS) revert Controller__MaxAssets();
         if (token == address(0) || borrower == address(0)) revert Controller__NotInitialized();
+        if (IAuction(auction).isLive()) revert Controller__AuctionOngoing();
+        if (IToken(token).assets().length == MAX_ASSETS) revert Controller__MaxAssets();
         IToken(token).addAsset(asset);
         IBorrower(borrower).addBorrowableAsset(asset);
     }
@@ -181,11 +184,18 @@ contract Controller is AccessControl, IControllerCallback {
         uint256 protocolAmount = amount * PROTOCOL_FEE / FEE_DIVISOR;
         uint256 treasuryAmount = amount * TREASURY_FEE / FEE_DIVISOR;
         uint256 teamAmount = amount * TEAM_FEE / FEE_DIVISOR;
-
-        _transfer(asset, token, backingAmount);
-        _transfer(asset, PROTOCOL_COLLECTOR, protocolAmount);
-        _transfer(asset, treasury, treasuryAmount);
-        _transfer(asset, TEAM_COLLECTOR, teamAmount);
+        if (backingAmount > 0) {
+            _transfer(asset, token, backingAmount);
+        }
+        if (protocolAmount > 0) {
+            _transfer(asset, PROTOCOL_COLLECTOR, protocolAmount);
+        }
+        if (treasuryAmount > 0) {
+            _transfer(asset, treasury, treasuryAmount);
+        }
+        if (teamAmount > 0) {
+            _transfer(asset, TEAM_COLLECTOR, teamAmount);
+        }
     }
 
     function _transfer(address asset, address to, uint256 amount) internal {

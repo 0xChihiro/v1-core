@@ -119,13 +119,17 @@ contract BorrowerUnlockTest is Test {
         secondAsset = new ERC20Mock();
 
         ITokenFactory.TokenConfig memory config = ITokenFactory.TokenConfig({
-            name: "Enten", symbol: "ENT", controller: address(this), maxSupply: type(uint256).max
+            name: "Enten",
+            symbol: "ENT",
+            controller: address(this),
+            maxSupply: type(uint256).max,
+            preMintReceiver: USER,
+            preMintAmount: COLLATERAL
         });
 
         token = new Token(config);
         borrower = new BorrowerHarness(address(this), address(token));
 
-        token.mint(USER, COLLATERAL);
         asset.mint(address(this), ASSET_BALANCE);
         secondAsset.mint(address(this), SECOND_ASSET_BALANCE);
         asset.transfer(address(token), ASSET_BALANCE);

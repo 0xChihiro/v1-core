@@ -12,6 +12,7 @@ contract Token is ERC20, IToken {
     uint256 public immutable MAX_SUPPLY;
     address public immutable CONTROLLER;
 
+    mapping(address => bool) private _registeredAssets;
     address[] private _assets;
     address public borrower;
 
@@ -19,6 +20,7 @@ contract Token is ERC20, IToken {
     event Token__Burn(address indexed from, uint256 amount);
     event Token__Redeem(address indexed to, uint256 redeemedAmount, IToken.AssetValue[] values);
 
+    error Token__AssetAlreadyAdded();
     error Token__BorrowerInitialized();
     error Token__OnlyBorrower();
     error Token__BorrowerZeroAddress();
@@ -32,12 +34,18 @@ contract Token is ERC20, IToken {
     error Token__AssetNotFunded();
     error Token__NameEmpty();
     error Token__SymbolEmpty();
+    error Token__PreMintMisconfigured();
 
     constructor(ITokenFactory.TokenConfig memory config) ERC20(config.name, config.symbol) {
         if (bytes(config.name).length == 0) revert Token__NameEmpty();
         if (bytes(config.symbol).length == 0) revert Token__SymbolEmpty();
         if (config.maxSupply == 0) revert Token__MaxSupplyZero();
         if (config.controller == address(0)) revert Token__ControllerMisconfigured();
+        if (
+            config.preMintReceiver == address(0) || config.preMintAmount == 0 || config.preMintAmount > config.maxSupply
+        ) revert Token__PreMintMisconfigured();
+
+        _mint(config.preMintReceiver, config.preMintAmount);
 
         MAX_SUPPLY = config.maxSupply;
         CONTROLLER = config.controller;
@@ -51,16 +59,16 @@ contract Token is ERC20, IToken {
         emit Token__Mint(account, amount);
     }
 
-    // Burn before changes redeemption price. Burn after getting prices, then send tokens
-    // after burning
     function redeem(address account, uint256 amount) external {
         if (msg.sender != CONTROLLER) revert Token__ControllerOnly();
         if (amount > balanceOf(account)) revert Token__RedeemBalance();
-        _burn(account, amount);
         IToken.AssetValue[] memory values = prices();
         for (uint256 i = 0; i < values.length; i++) {
-            uint256 tokenAmount = amount * values[i].value / 1e18;
-            bool success = IToken(values[i].asset).transfer(account, tokenAmount);
+            values[i].value = amount * values[i].value / 1e18;
+        }
+        _burn(account, amount);
+        for (uint256 i = 0; i < values.length; i++) {
+            bool success = IToken(values[i].asset).transfer(account, values[i].value);
             require(success, "Redeem Transfer Failed");
         }
         emit Token__Redeem(account, amount, values);
@@ -75,8 +83,10 @@ contract Token is ERC20, IToken {
 
     function addAsset(address asset) external {
         if (msg.sender != CONTROLLER) revert Token__ControllerOnly();
+        if (_registeredAssets[asset]) revert Token__AssetAlreadyAdded();
         if (asset == address(0)) revert Token__AssetZeroAddress();
         if (_price(asset) == 0) revert Token__AssetNotFunded();
+        _registeredAssets[asset] = true;
         _assets.push(asset);
     }
 

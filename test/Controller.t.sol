@@ -347,7 +347,12 @@ contract ControllerTest is Test {
 
     function _tokenConfig() internal pure returns (ITokenFactory.TokenConfig memory config) {
         config = ITokenFactory.TokenConfig({
-            name: "Enten", symbol: "ENT", controller: address(0xDEAD), maxSupply: type(uint256).max
+            name: "Enten",
+            symbol: "ENT",
+            controller: address(0xDEAD),
+            maxSupply: type(uint256).max,
+            preMintReceiver: ADMIN,
+            preMintAmount: 1e18
         });
     }
 

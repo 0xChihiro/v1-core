@@ -32,6 +32,7 @@ contract Auction is IAuction {
     error Auction__AuctionScalarZero();
     error Auction__ScalarBoundsInvalid();
     error Auction__MinAuctionScalarZero();
+    error Auction__ZeroPricesReturned();
 
     constructor(IAuctionFactory.AuctionConfig memory config) {
         if (config.controller == address(0)) revert Auction__ControllerMisconfigured();
@@ -50,7 +51,7 @@ contract Auction is IAuction {
         MIN_AUCTION_SCALAR = config.minAuctionScalar;
     }
 
-    function bid(uint256 amount, uint256 deadline, uint256 epochId, address buyer) external {
+    function bid(uint256 amount, uint256 deadline, uint256 epochId, address buyer) external returns (uint256) {
         if (msg.sender != CONTROLLER) revert Auction__NotController();
         if (block.timestamp > deadline) revert Auction__DeadlinePassed();
         if (currentEpoch != epochId) revert Auction__EpochIdMismatch();
@@ -58,8 +59,10 @@ contract Auction is IAuction {
         uint256 buyAmount = amount > remainingLot ? remainingLot : amount;
         remainingLot -= buyAmount;
         IControllerCallback.CallbackValue[] memory values = getPrices(buyAmount);
+        if (values.length == 0) revert Auction__ZeroPricesReturned();
         bool success = IControllerCallback(CONTROLLER).finalizeBuy(values, buyer);
         require(success);
+        return buyAmount;
     }
 
     function start() external {
@@ -79,6 +82,14 @@ contract Auction is IAuction {
 
     function startPrices() internal view returns (IToken.AssetValue[] memory) {
         return IToken(TOKEN).prices();
+    }
+
+    function isLive() external view returns (bool) {
+        if (block.timestamp <= epochStart + EPOCH_PERIOD) {
+            return true;
+        } else {
+            return false;
+        }
     }
 
     function getRemaining() external view returns (uint256, uint256) {
