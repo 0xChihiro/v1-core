@@ -19,6 +19,9 @@ contract Token is ERC20, IToken {
     event Token__Mint(address indexed to, uint256 amount);
     event Token__Burn(address indexed from, uint256 amount);
     event Token__Redeem(address indexed to, uint256 redeemedAmount, IToken.AssetValue[] values);
+    event Token__FulfillBorrow(address indexed asset, address indexed to, uint256 amount);
+    event Token__AddAsset(address indexed asset);
+    event Token__AddBorrower(address indexed borrower);
 
     error Token__AssetAlreadyAdded();
     error Token__BorrowerInitialized();
@@ -84,10 +87,11 @@ contract Token is ERC20, IToken {
     function addAsset(address asset) external {
         if (msg.sender != CONTROLLER) revert Token__ControllerOnly();
         if (_registeredAssets[asset]) revert Token__AssetAlreadyAdded();
-        if (asset == address(0)) revert Token__AssetZeroAddress();
+        if (asset == address(0) || asset == address(this)) revert Token__AssetZeroAddress();
         if (_price(asset) == 0) revert Token__AssetNotFunded();
         _registeredAssets[asset] = true;
         _assets.push(asset);
+        emit Token__AddAsset(asset);
     }
 
     function addBorrower(address _borrower) external {
@@ -95,11 +99,13 @@ contract Token is ERC20, IToken {
         if (_borrower == address(0)) revert Token__BorrowerZeroAddress();
         if (borrower != address(0)) revert Token__BorrowerInitialized();
         borrower = _borrower;
+        emit Token__AddBorrower(_borrower);
     }
 
     function fulfillBorrow(address asset, address to, uint256 amount) external {
         if (msg.sender != borrower) revert Token__OnlyBorrower();
         IToken(asset).safeTransfer(to, amount);
+        emit Token__FulfillBorrow(asset, to, amount);
     }
 
     function assets() external view returns (address[] memory) {
@@ -108,9 +114,13 @@ contract Token is ERC20, IToken {
 
     function prices() public view returns (IToken.AssetValue[] memory values) {
         values = new IToken.AssetValue[](_assets.length);
+        uint256 supply = totalSupply();
         for (uint256 i = 0; i < _assets.length; i++) {
-            uint256 borrowed = borrower == address(0) ? 0 : IBorrower(borrower).totalBorrows(_assets[i]);
-            uint256 value = (IToken(_assets[i]).balanceOf(address(this)) + borrowed) * 1e18 / totalSupply();
+            uint256 value;
+            if (supply != 0) {
+                uint256 borrowed = borrower == address(0) ? 0 : IBorrower(borrower).totalBorrows(_assets[i]);
+                value = (IToken(_assets[i]).balanceOf(address(this)) + borrowed) * 1e18 / supply;
+            }
             values[i] = IToken.AssetValue({asset: _assets[i], value: value});
         }
     }
@@ -120,7 +130,11 @@ contract Token is ERC20, IToken {
     }
 
     function _price(address asset) internal view returns (uint256) {
+        uint256 supply = totalSupply();
+        if (supply == 0) {
+            return 0;
+        }
         uint256 borrowed = borrower == address(0) ? 0 : IBorrower(borrower).totalBorrows(asset);
-        return (IToken(asset).balanceOf(address(this)) + borrowed) * 1e18 / totalSupply();
+        return (IToken(asset).balanceOf(address(this)) + borrowed) * 1e18 / supply;
     }
 }

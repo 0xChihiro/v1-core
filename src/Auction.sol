@@ -21,6 +21,9 @@ contract Auction is IAuction {
 
     uint256 public remainingLot;
 
+    event Auction__Bid(uint256 epoch, uint256 amount, IControllerCallback.CallbackValue[] paid);
+    event Auction__Start(uint256 epoch, uint256 startTime);
+
     error Auction__DeadlinePassed();
     error Auction__EpochIdMismatch();
     error Auction__AuctionFinished();
@@ -62,6 +65,7 @@ contract Auction is IAuction {
         if (values.length == 0) revert Auction__ZeroPricesReturned();
         bool success = IControllerCallback(CONTROLLER).finalizeBuy(values, buyer);
         require(success);
+        emit Auction__Bid(epochId, buyAmount, values);
         return buyAmount;
     }
 
@@ -75,9 +79,11 @@ contract Auction is IAuction {
         remainingLot = LOT_SIZE;
         delete _startPrices;
         IToken.AssetValue[] memory values = startPrices();
+        if (values.length == 0) revert Auction__ZeroPricesReturned();
         for (uint256 i = 0; i < values.length; i++) {
             _startPrices.push(values[i]);
         }
+        emit Auction__Start(currentEpoch, block.timestamp);
     }
 
     function startPrices() internal view returns (IToken.AssetValue[] memory) {
@@ -85,11 +91,7 @@ contract Auction is IAuction {
     }
 
     function isLive() external view returns (bool) {
-        if (block.timestamp <= epochStart + EPOCH_PERIOD) {
-            return true;
-        } else {
-            return false;
-        }
+        return currentEpoch != 0 && remainingLot > 0 && block.timestamp <= epochStart + EPOCH_PERIOD;
     }
 
     function getRemaining() external view returns (uint256, uint256) {
@@ -99,7 +101,7 @@ contract Auction is IAuction {
     }
 
     function getPrices(uint256 amount) public view returns (IControllerCallback.CallbackValue[] memory values) {
-        IToken.AssetValue[] memory prices = _startPrices;
+        IToken.AssetValue[] memory prices = IToken(TOKEN).prices();
         values = new IControllerCallback.CallbackValue[](prices.length);
         uint256 timePassed = block.timestamp - epochStart;
         if (timePassed > EPOCH_PERIOD) {

@@ -7,7 +7,7 @@ import {ITreasuryFactory} from "../interfaces/factories/ITreasuryFactory.sol";
 contract TreasuryFactory is ITreasuryFactory {
     constructor() {}
 
-    function createTreasury() external returns (address) {
-        return address(new Treasury());
+    function createTreasury(address controller, uint256 maxStrategies) external returns (address) {
+        return address(new Treasury(controller, maxStrategies));
     }
 }

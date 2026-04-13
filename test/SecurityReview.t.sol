@@ -44,7 +44,7 @@ contract DummyTreasury is ITreasury {
 }
 
 contract DummyTreasuryFactory is ITreasuryFactory {
-    function createTreasury() external returns (address) {
+    function createTreasury(address, uint256) external returns (address) {
         return address(new DummyTreasury());
     }
 }
@@ -54,6 +54,7 @@ contract SecurityReviewTest is Test {
     uint256 internal constant MAX_SUPPLY = 1_000e18;
     uint256 internal constant LOT_SIZE = 50e18;
     uint256 internal constant EPOCH_PERIOD = 1 days;
+    uint256 internal constant MAX_STRATEGIES = 5;
 
     address internal constant ADMIN = address(0xA11CE);
     address internal constant BUYER = address(0xB0B);
@@ -71,23 +72,16 @@ contract SecurityReviewTest is Test {
         treasuryFactory = new DummyTreasuryFactory();
     }
 
-    function testFuzz_buyRevertsWithoutMintingWhenAuctionHasNoPrices(uint96 rawAmount) public {
+    function test_startNextAuctionRevertsWithoutStartingWhenAuctionHasNoPrices() public {
         (Controller controller, Token token, Auction auction) = _deployController();
-        uint256 requestedAmount = bound(uint256(rawAmount), 1, LOT_SIZE * 2);
-        uint256 epochId;
 
-        vm.prank(ADMIN);
-        controller.startNextAuction();
-        epochId = auction.currentEpoch();
-
-        uint256 buyerBalanceBefore = token.balanceOf(BUYER);
         uint256 totalSupplyBefore = token.totalSupply();
 
         vm.expectRevert(Auction.Auction__ZeroPricesReturned.selector);
-        vm.prank(BUYER);
-        controller.buy(requestedAmount, block.timestamp, epochId);
+        vm.prank(ADMIN);
+        controller.startNextAuction();
 
-        assertEq(token.balanceOf(BUYER), buyerBalanceBefore);
+        assertEq(auction.currentEpoch(), 0);
         assertEq(token.totalSupply(), totalSupplyBefore);
     }
 
@@ -99,7 +93,7 @@ contract SecurityReviewTest is Test {
         controller.initializeBorrower();
 
         asset.mint(address(this), PREMINT);
-        asset.transfer(address(token), PREMINT);
+        assertTrue(asset.transfer(address(token), PREMINT));
 
         vm.prank(ADMIN);
         controller.addAsset(address(asset));
@@ -132,7 +126,7 @@ contract SecurityReviewTest is Test {
         controller = new Controller(_controllerConfig());
 
         vm.prank(ADMIN);
-        controller.initialize(_tokenConfig());
+        controller.initialize(_tokenConfig(), MAX_STRATEGIES);
 
         token = Token(controller.token());
 

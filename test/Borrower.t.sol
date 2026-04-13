@@ -132,8 +132,8 @@ contract BorrowerUnlockTest is Test {
 
         asset.mint(address(this), ASSET_BALANCE);
         secondAsset.mint(address(this), SECOND_ASSET_BALANCE);
-        asset.transfer(address(token), ASSET_BALANCE);
-        secondAsset.transfer(address(token), SECOND_ASSET_BALANCE);
+        assertTrue(asset.transfer(address(token), ASSET_BALANCE));
+        assertTrue(secondAsset.transfer(address(token), SECOND_ASSET_BALANCE));
         token.addAsset(address(asset));
         token.addAsset(address(secondAsset));
         borrower.addBorrowableAsset(address(asset));
@@ -177,6 +177,84 @@ contract BorrowerUnlockTest is Test {
         vm.prank(USER);
         vm.expectRevert(Borrower.Borrower__InvalidWithdrawlAmount.selector);
         borrower.unlock(COLLATERAL + 1);
+    }
+}
+
+contract BorrowerRedemptionLiquidityTest is Test {
+    uint256 internal constant TOTAL_SUPPLY = 100e18;
+    uint256 internal constant LOCKED_SUPPLY = 50e18;
+    uint256 internal constant UNLOCKED_SUPPLY = 50e18;
+    uint256 internal constant ASSET_BACKING = 100e18;
+
+    address internal constant BORROWER_ACCOUNT = address(0xA11CE);
+    address internal constant UNLOCKED_HOLDER = address(0xB0B);
+
+    ERC20Mock internal asset;
+    Token internal token;
+    Borrower internal borrower;
+
+    function setUp() public {
+        asset = new ERC20Mock();
+
+        ITokenFactory.TokenConfig memory config = ITokenFactory.TokenConfig({
+            name: "Enten",
+            symbol: "ENT",
+            controller: address(this),
+            maxSupply: type(uint256).max,
+            preMintReceiver: BORROWER_ACCOUNT,
+            preMintAmount: TOTAL_SUPPLY
+        });
+
+        token = new Token(config);
+        borrower = new Borrower(address(this), address(token));
+
+        asset.mint(address(this), ASSET_BACKING);
+        assertTrue(asset.transfer(address(token), ASSET_BACKING));
+
+        token.addBorrower(address(borrower));
+        token.addAsset(address(asset));
+        borrower.addBorrowableAsset(address(asset));
+
+        vm.prank(BORROWER_ACCOUNT);
+        assertTrue(token.transfer(UNLOCKED_HOLDER, UNLOCKED_SUPPLY));
+
+        vm.prank(BORROWER_ACCOUNT);
+        token.approve(address(borrower), type(uint256).max);
+    }
+
+    function test_unlockedSupplyCanRedeemAfterBorrowerBorrowsLockedShare() public {
+        vm.prank(BORROWER_ACCOUNT);
+        borrower.lock(LOCKED_SUPPLY);
+
+        vm.prank(BORROWER_ACCOUNT);
+        borrower.borrow(IBorrower.BorrowCall({asset: address(asset), amount: LOCKED_SUPPLY}));
+
+        assertEq(asset.balanceOf(address(token)), UNLOCKED_SUPPLY);
+        assertEq(borrower.totalBorrows(address(asset)), LOCKED_SUPPLY);
+
+        vm.prank(BORROWER_ACCOUNT);
+        vm.expectRevert(Borrower.Borrower__TooMuchDebt.selector);
+        borrower.unlock(LOCKED_SUPPLY);
+
+        token.redeem(UNLOCKED_HOLDER, UNLOCKED_SUPPLY);
+
+        assertEq(token.balanceOf(UNLOCKED_HOLDER), 0);
+        assertEq(asset.balanceOf(UNLOCKED_HOLDER), UNLOCKED_SUPPLY);
+        assertEq(asset.balanceOf(address(token)), 0);
+        assertEq(borrower.totalBorrows(address(asset)), LOCKED_SUPPLY);
+    }
+
+    function test_borrowCannotConsumeLiquidityNeededByUnlockedSupply() public {
+        vm.prank(BORROWER_ACCOUNT);
+        borrower.lock(LOCKED_SUPPLY);
+
+        vm.prank(BORROWER_ACCOUNT);
+        vm.expectRevert(Borrower.Borrower__ExceedsBorrowingCapacity.selector);
+        borrower.borrow(IBorrower.BorrowCall({asset: address(asset), amount: LOCKED_SUPPLY + 1}));
+
+        assertEq(asset.balanceOf(address(token)), ASSET_BACKING);
+        assertEq(asset.balanceOf(BORROWER_ACCOUNT), 0);
+        assertEq(borrower.totalBorrows(address(asset)), 0);
     }
 }
 

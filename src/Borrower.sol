@@ -61,11 +61,11 @@ contract Borrower is IBorrower {
         if (!_borrowableAssets[call.asset]) revert Borrower__AssetNotBorrowable();
         IBorrower.Position storage position = positions[msg.sender];
         uint256 newBorrowedAmount = position.borrowed[call.asset] + call.amount;
-        position.borrowed[call.asset] += call.amount;
-        totalBorrows[call.asset] += call.amount;
         if (newBorrowedAmount > _maxBorrow(call.asset, position.collateral)) {
             revert Borrower__ExceedsBorrowingCapacity();
         }
+        position.borrowed[call.asset] = newBorrowedAmount;
+        totalBorrows[call.asset] += call.amount;
         IToken(TOKEN).fulfillBorrow(call.asset, msg.sender, call.amount);
     }
 

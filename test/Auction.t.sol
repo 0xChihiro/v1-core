@@ -79,7 +79,7 @@ contract AuctionTest is Test, IControllerCallback {
     function setUp() public {
         token = new AuctionTokenMock();
         auction = new Auction(_config());
-        _setStartPrices();
+        _setPrices();
     }
 
     function finalizeBuy(IControllerCallback.CallbackValue[] memory values, address buyer) external returns (bool) {
@@ -153,7 +153,7 @@ contract AuctionTest is Test, IControllerCallback {
         auction.start();
     }
 
-    function test_startSetsEpochLotAndSnapshotsPrices() public {
+    function test_startSetsEpochLotAndGetPricesUsesLivePrices() public {
         auction.start();
 
         assertEq(auction.currentEpoch(), 1);
@@ -171,9 +171,9 @@ contract AuctionTest is Test, IControllerCallback {
         IControllerCallback.CallbackValue[] memory prices = auction.getPrices(10e18);
         assertEq(prices.length, 2);
         assertEq(prices[0].asset, ASSET);
-        assertEq(prices[0].value, 40e18);
+        assertEq(prices[0].value, 180e18);
         assertEq(prices[1].asset, SECOND_ASSET);
-        assertEq(prices[1].value, 10e18);
+        assertEq(prices[1].value, 180e18);
     }
 
     function test_getRemainingReturnsTimeAndLotDuringAuction() public {
@@ -196,7 +196,7 @@ contract AuctionTest is Test, IControllerCallback {
         assertEq(remainingLot, LOT_SIZE);
     }
 
-    function test_getPricesReturnsAuctionStartPricesAtEpochStart() public {
+    function test_getPricesReturnsCurrentPricesAtEpochStart() public {
         auction.start();
 
         IControllerCallback.CallbackValue[] memory values = auction.getPrices(10e18);
@@ -320,7 +320,7 @@ contract AuctionTest is Test, IControllerCallback {
         });
     }
 
-    function _setStartPrices() internal {
+    function _setPrices() internal {
         address[] memory assets_ = new address[](2);
         uint256[] memory values_ = new uint256[](2);
         assets_[0] = ASSET;

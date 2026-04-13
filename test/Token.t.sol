@@ -51,7 +51,7 @@ contract TokenTest is Test {
         token = new Token(_config(type(uint256).max));
 
         asset.mint(address(this), ASSET_BALANCE);
-        asset.transfer(address(token), ASSET_BALANCE);
+        assertTrue(asset.transfer(address(token), ASSET_BALANCE));
     }
 
     function test_constructorRevertsWhenNameIsEmpty() public {
@@ -169,6 +169,18 @@ contract TokenTest is Test {
         token.addAsset(address(0));
     }
 
+    function test_addAssetRevertsWhenAssetIsToken() public {
+        vm.expectRevert(Token.Token__AssetZeroAddress.selector);
+        token.addAsset(address(token));
+    }
+
+    function test_addAssetRevertsWhenAssetAlreadyAdded() public {
+        token.addAsset(address(asset));
+
+        vm.expectRevert(Token.Token__AssetAlreadyAdded.selector);
+        token.addAsset(address(asset));
+    }
+
     function test_addAssetRevertsWhenAssetHasNoBacking() public {
         ERC20Mock unfundedAsset = new ERC20Mock();
 
@@ -246,7 +258,7 @@ contract TokenTest is Test {
         uint256 priceBeforeBorrow = token.price(address(asset));
 
         vm.prank(address(token));
-        asset.transfer(RECEIVER, BORROWED);
+        assertTrue(asset.transfer(RECEIVER, BORROWED));
         borrower.setTotalBorrows(address(asset), BORROWED);
 
         uint256 priceAfterBorrow = token.price(address(asset));
@@ -258,9 +270,21 @@ contract TokenTest is Test {
         assertEq(values[0].value, priceBeforeBorrow);
     }
 
+    function test_pricesReturnZeroWhenSupplyIsZero() public {
+        token.addAsset(address(asset));
+        token.burn(USER, SUPPLY);
+
+        IToken.AssetValue[] memory values = token.prices();
+
+        assertEq(values.length, 1);
+        assertEq(values[0].asset, address(asset));
+        assertEq(values[0].value, 0);
+        assertEq(token.price(address(asset)), 0);
+    }
+
     function test_pricesReturnsAllConfiguredAssets() public {
         secondAsset.mint(address(this), 50e18);
-        secondAsset.transfer(address(token), 50e18);
+        assertTrue(secondAsset.transfer(address(token), 50e18));
 
         token.addAsset(address(asset));
         token.addAsset(address(secondAsset));

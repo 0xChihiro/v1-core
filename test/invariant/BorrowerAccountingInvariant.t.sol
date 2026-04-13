@@ -128,13 +128,13 @@ contract BorrowerAccountingInvariant is StdInvariant, Test {
         borrower = new BorrowerViewHarness(address(this), address(token));
 
         asset.mint(address(this), INITIAL_ASSET_BALANCE);
-        asset.transfer(address(token), INITIAL_ASSET_BALANCE);
+        assertTrue(asset.transfer(address(token), INITIAL_ASSET_BALANCE));
         token.addBorrower(address(borrower));
         token.addAsset(address(asset));
         borrower.addBorrowableAsset(address(asset));
 
         vm.prank(ALICE);
-        token.transfer(BOB, PREMINT / 2);
+        assertTrue(token.transfer(BOB, PREMINT / 2));
 
         handler = new BorrowerHandler(asset, token, borrower, [ALICE, BOB]);
         targetContract(address(handler));
