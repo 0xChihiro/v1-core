@@ -9,6 +9,6 @@ out/
 
 # Docs
 docs/
-
+*.info
 # Dotenv file
 .env
