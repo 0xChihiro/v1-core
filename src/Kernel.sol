@@ -1,27 +1,52 @@
 ///SPDX-License-Identifier: MIT
 pragma solidity 0.8.34;
 
-import {IController} from "./interfaces/IController.sol";
 import {IKernel} from "./interfaces/IKernel.sol";
 
 contract Kernel is IKernel {
     error Kernel__ControllerZeroAddress();
-    error Kernel__InvalidCaller();
     error Kernel__InvalidSlotDataLength();
     error Kernel__SlotReadOverflow();
     error Kernel__AddOverflow();
     error Kernel__SubUnderflow();
     error Kernel__OnlyController();
+    error Kernel__OnlyAccountingWriter();
+    error Kernel__AccountingWriterAlreadySet();
+    error Kernel__AccountingWriterZeroAddress();
 
     address public immutable CONTROLLER;
+    address public accountingWriter;
 
     constructor(address controller) {
         if (controller == address(0)) revert Kernel__ControllerZeroAddress();
         CONTROLLER = controller;
     }
 
-    function updateState(bytes32 startSlot, bytes calldata data) external {
-        if (!IController(CONTROLLER).isPermissioned(msg.sender)) revert Kernel__InvalidCaller();
+    modifier onlyController() {
+        _onlyController();
+        _;
+    }
+
+    modifier onlyAccountingWriter() {
+        _onlyAccountingWriter();
+        _;
+    }
+
+    function _onlyController() internal view {
+        if (msg.sender != CONTROLLER) revert Kernel__OnlyController();
+    }
+
+    function _onlyAccountingWriter() internal view {
+        if (msg.sender != CONTROLLER && msg.sender != accountingWriter) revert Kernel__OnlyAccountingWriter();
+    }
+
+    function setAccountingWriter(address writer) external onlyController {
+        if (accountingWriter != address(0)) revert Kernel__AccountingWriterAlreadySet();
+        if (writer == address(0)) revert Kernel__AccountingWriterZeroAddress();
+        accountingWriter = writer;
+    }
+
+    function updateState(bytes32 startSlot, bytes calldata data) external onlyController {
         if (data.length & 31 != 0) revert Kernel__InvalidSlotDataLength();
 
         assembly ("memory-safe") {
@@ -38,16 +63,13 @@ contract Kernel is IKernel {
         }
     }
 
-    function updateState(bytes32 slot, bytes32 data) external {
-        if (!IController(CONTROLLER).isPermissioned(msg.sender)) revert Kernel__InvalidCaller();
+    function updateState(bytes32 slot, bytes32 data) external onlyController {
         assembly ("memory-safe") {
             sstore(slot, data)
         }
     }
 
-    function updateState(KernelCall[] calldata calls) external {
-        if (!IController(CONTROLLER).isPermissioned(msg.sender)) revert Kernel__InvalidCaller();
-
+    function updateState(KernelCall[] calldata calls) external onlyController {
         assembly ("memory-safe") {
             let calldataptr := calls.offset
             let end := add(calldataptr, shl(6, calls.length))
@@ -58,8 +80,7 @@ contract Kernel is IKernel {
         }
     }
 
-    function add(KernelCall[] calldata calls) external {
-        if (!IController(CONTROLLER).isPermissioned(msg.sender)) revert Kernel__InvalidCaller();
+    function add(KernelCall[] calldata calls) external onlyAccountingWriter {
         for (uint256 i = 0; i < calls.length;) {
             bytes32 slot = calls[i].slot;
             uint256 data;
@@ -78,8 +99,7 @@ contract Kernel is IKernel {
         }
     }
 
-    function add(bytes32 slot, bytes32 value) external {
-        if (!IController(CONTROLLER).isPermissioned(msg.sender)) revert Kernel__InvalidCaller();
+    function add(bytes32 slot, bytes32 value) external onlyAccountingWriter {
         uint256 data;
         assembly ("memory-safe") {
             data := sload(slot)
@@ -93,8 +113,7 @@ contract Kernel is IKernel {
         }
     }
 
-    function sub(bytes32 slot, bytes32 value) external {
-        if (!IController(CONTROLLER).isPermissioned(msg.sender)) revert Kernel__InvalidCaller();
+    function sub(bytes32 slot, bytes32 value) external onlyAccountingWriter {
         uint256 data;
         assembly ("memory-safe") {
             data := sload(slot)
@@ -108,8 +127,7 @@ contract Kernel is IKernel {
         }
     }
 
-    function sub(KernelCall[] calldata calls) external {
-        if (!IController(CONTROLLER).isPermissioned(msg.sender)) revert Kernel__InvalidCaller();
+    function sub(KernelCall[] calldata calls) external onlyAccountingWriter {
         for (uint256 i = 0; i < calls.length;) {
             bytes32 slot = calls[i].slot;
             uint256 data;

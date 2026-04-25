@@ -2,32 +2,13 @@
 pragma solidity 0.8.34;
 
 import {Test, stdError} from "forge-std/Test.sol";
+import {IAccessControl} from "openzeppelin/contracts/access/IAccessControl.sol";
 import {ERC20} from "openzeppelin/contracts/token/ERC20/ERC20.sol";
-import {IController} from "../src/interfaces/IController.sol";
-import {IVault} from "../src/interfaces/IVault.sol";
+import {Controller} from "../src/Controller.sol";
+import {IController, IModule, IPolicy, Keycode, Permission} from "../src/interfaces/IController.sol";
+import {IVault as IVaultCore} from "../src/interfaces/IVault.sol";
 import {Kernel} from "../src/Kernel.sol";
 import {Vault} from "../src/Vault.sol";
-
-contract VaultControllerMock is IController {
-    mapping(address => bool) internal permissioned;
-    mapping(address => bool) internal access;
-
-    function setPermissioned(address caller, bool isAllowed) external {
-        permissioned[caller] = isAllowed;
-    }
-
-    function isPermissioned(address caller) external view returns (bool) {
-        return permissioned[caller];
-    }
-
-    function setAccess(address caller, bool isAllowed) external {
-        access[caller] = isAllowed;
-    }
-
-    function vaultAccess(address caller) external view returns (bool) {
-        return access[caller];
-    }
-}
 
 contract ERC20Mock is ERC20 {
     constructor(string memory name_, string memory symbol_) ERC20(name_, symbol_) {}
@@ -45,7 +26,7 @@ contract VaultHarness is Vault {
     }
 
     function exposedNamespaceUnchecked(uint256 raw) external pure returns (bytes32) {
-        IVault.Bucket bucket;
+        IVaultCore.Bucket bucket;
         assembly ("memory-safe") {
             bucket := raw
         }
@@ -57,6 +38,102 @@ contract VaultHarness is Vault {
     }
 }
 
+contract PriceModule is IModule {
+    Keycode internal constant PRICE = Keycode.wrap(0x5052494345);
+
+    bool public initialized;
+
+    function keycode() external pure returns (Keycode) {
+        return PRICE;
+    }
+
+    function version() external pure returns (uint8 major, uint8 minor) {
+        return (1, 0);
+    }
+
+    function init() external {
+        initialized = true;
+    }
+
+    function price() external pure returns (uint256) {
+        return 1;
+    }
+}
+
+contract BadKeycodeModule is IModule {
+    function keycode() external pure returns (Keycode) {
+        return Keycode.wrap(0x7072696365);
+    }
+
+    function version() external pure returns (uint8 major, uint8 minor) {
+        return (1, 0);
+    }
+
+    function init() external {}
+}
+
+contract AuctionModule is IModule {
+    Keycode internal constant AUCTION = Keycode.wrap(0x415543544E);
+
+    bool public initialized;
+
+    function keycode() external pure returns (Keycode) {
+        return AUCTION;
+    }
+
+    function version() external pure returns (uint8 major, uint8 minor) {
+        return (1, 0);
+    }
+
+    function init() external {
+        initialized = true;
+    }
+
+    function clearAuction(Controller controller, Controller.AuctionSettlement calldata settlement) external {
+        controller.clearAuction(settlement);
+    }
+}
+
+contract AuctionPolicy is IPolicy {
+    Keycode internal constant AUCTION = Keycode.wrap(0x415543544E);
+    Keycode internal constant PRICE = Keycode.wrap(0x5052494345);
+
+    bool public configured;
+
+    function keycode() external pure returns (Keycode) {
+        return AUCTION;
+    }
+
+    function configureDependencies() external returns (Keycode[] memory dependencies) {
+        configured = true;
+        dependencies = new Keycode[](1);
+        dependencies[0] = PRICE;
+    }
+
+    function requestPermissions() external pure returns (Permission[] memory requests) {
+        requests = new Permission[](1);
+        requests[0] = Permission({keycode: PRICE, selector: PriceModule.price.selector});
+    }
+}
+
+contract MissingDependencyPolicy is IPolicy {
+    Keycode internal constant MISSING_POLICY = Keycode.wrap(0x4D4953534E);
+    Keycode internal constant MISSING_MODULE = Keycode.wrap(0x4D49535347);
+
+    function keycode() external pure returns (Keycode) {
+        return MISSING_POLICY;
+    }
+
+    function configureDependencies() external pure returns (Keycode[] memory dependencies) {
+        dependencies = new Keycode[](1);
+        dependencies[0] = MISSING_MODULE;
+    }
+
+    function requestPermissions() external pure returns (Permission[] memory requests) {
+        requests = new Permission[](0);
+    }
+}
+
 contract VaultTest is Test {
     bytes32 internal constant TREASURY_AMOUNT_SLOT = 0x60b5ab302bbeea0c83917cc1819e272c0b2ec70ceb2f138a32d5caae015750f3;
     bytes32 internal constant BACKING_AMOUNT_SLOT = 0x0024fb7f9ccb99221958049f86297fab788b0f0b640b3f50254c9bd56ccf0930;
@@ -64,334 +141,345 @@ contract VaultTest is Test {
     bytes32 internal constant ASSET_COUNT_SLOT = 0xd635f114cc21f2834e679c2555d4ff475d8d6f01003ca6da1dfee13ecdf62738;
     bytes32 internal constant ASSET_BASE_SLOT = 0x1a27d05721698994f0e5408d30550ae696157097140b4a919a081b62c08e625f;
 
-    event SurplusSynced(address indexed asset, IVault.Bucket indexed bucket, uint256 amount);
-
-    VaultControllerMock internal controller;
+    Controller internal controller;
     Kernel internal kernel;
-    VaultHarness internal vault;
+    Vault internal vault;
     ERC20Mock internal asset;
     ERC20Mock internal assetTwo;
 
-    address internal constant STRANGER = address(0xCAFE);
     address internal constant RECIPIENT = address(0xBEEF);
-    address internal constant RECIPIENT_TWO = address(0xF00D);
+    address internal constant STRANGER = address(0xCAFE);
+    address internal constant PROTOCOL_COLLECTOR = address(0xFEE);
+    uint256 internal constant AUCTION_FEE_BPS = 250;
+    Keycode internal constant EMPTY_KEYCODE = Keycode.wrap(0);
+    Keycode internal constant PRICE_KEYCODE = Keycode.wrap(0x5052494345);
+    Keycode internal constant AUCTION_KEYCODE = Keycode.wrap(0x415543544E);
+    uint256 internal constant BPS = 10_000;
 
     function setUp() public {
-        controller = new VaultControllerMock();
-        kernel = new Kernel(address(controller));
-        vault = new VaultHarness(address(controller), address(kernel));
+        controller = new Controller(address(this), PROTOCOL_COLLECTOR);
+        kernel = controller.KERNEL();
+        vault = controller.VAULT();
+
         asset = new ERC20Mock("Mock Asset", "MOCK");
         assetTwo = new ERC20Mock("Second Asset", "MOCK2");
-
-        controller.setPermissioned(address(vault), true);
-        controller.setPermissioned(address(this), true);
-        controller.setAccess(address(this), true);
-
         asset.mint(address(this), 1_000e18);
         assetTwo.mint(address(this), 1_000e18);
         asset.approve(address(vault), type(uint256).max);
         assetTwo.approve(address(vault), type(uint256).max);
     }
 
-    function testConstructorRevertsForZeroController() public {
-        vm.expectRevert(Vault.Vault__MisconfiguredSetup.selector);
-        new VaultHarness(address(0), address(kernel));
+    function testControllerConstructorRevertsForZeroAdmin() public {
+        vm.expectRevert(Controller.Controller__ZeroAddress.selector);
+        new Controller(address(0), PROTOCOL_COLLECTOR);
     }
 
-    function testConstructorRevertsForZeroKernel() public {
-        vm.expectRevert(Vault.Vault__MisconfiguredSetup.selector);
-        new VaultHarness(address(controller), address(0));
+    function testControllerGrantsAdminAndExecutorRoles() public view {
+        assertTrue(controller.hasRole(controller.DEFAULT_ADMIN_ROLE(), address(this)));
+        assertTrue(controller.hasRole(controller.EXECUTOR_ROLE(), address(this)));
     }
 
-    function testTransferTreasuryAssetTransfersTokensAndUpdatesAccounting() public {
+    function testControllerDeploysKernelAndVaultWithControllerOwnership() public view {
+        assertEq(kernel.CONTROLLER(), address(controller));
+        assertEq(kernel.accountingWriter(), address(vault));
+        assertEq(vault.CONTROLLER(), address(controller));
+        assertEq(address(vault.KERNEL()), address(kernel));
+        assertEq(controller.PROTOCOL_COLLECTOR(), PROTOCOL_COLLECTOR);
+    }
+
+    function testExecuteRevertsForUnauthorizedCaller() public {
+        PriceModule module = new PriceModule();
+        bytes32 role = controller.EXECUTOR_ROLE();
+
+        vm.expectRevert(
+            abi.encodeWithSelector(IAccessControl.AccessControlUnauthorizedAccount.selector, STRANGER, role)
+        );
+        vm.prank(STRANGER);
+        controller.execute(IController.Action.InstallModule, address(module));
+    }
+
+    function testInstallModuleRegistersKeycodeAndInitializesModule() public {
+        PriceModule module = new PriceModule();
+        Keycode price = PRICE_KEYCODE;
+
+        vm.expectEmit(true, true, false, true, address(controller));
+        emit Controller.ModuleInstalled(price, address(module));
+
+        controller.execute(IController.Action.InstallModule, address(module));
+
+        assertEq(controller.moduleForKeycode(price), address(module));
+        assertEq(Keycode.unwrap(controller.keycodeForModule(address(module))), Keycode.unwrap(price));
+        assertEq(Keycode.unwrap(controller.moduleKeycodeAt(0)), Keycode.unwrap(price));
+        assertTrue(module.initialized());
+    }
+
+    function testActivateModuleRequiresInstalledModule() public {
+        PriceModule module = new PriceModule();
+
+        vm.expectRevert(abi.encodeWithSelector(Controller.Controller__ModuleNotInstalled.selector, EMPTY_KEYCODE));
+        controller.execute(IController.Action.ActivateModule, address(module));
+    }
+
+    function testActivateModuleMarksInstalledModuleActive() public {
+        PriceModule module = new PriceModule();
+        Keycode price = PRICE_KEYCODE;
+
+        controller.execute(IController.Action.InstallModule, address(module));
+        controller.execute(IController.Action.ActivateModule, address(module));
+
+        assertTrue(controller.activeModules(price));
+    }
+
+    function testInstallModuleRevertsForInvalidKeycode() public {
+        BadKeycodeModule module = new BadKeycodeModule();
+
+        vm.expectRevert();
+        controller.execute(IController.Action.InstallModule, address(module));
+    }
+
+    function testInstallModuleRevertsForNonContractTarget() public {
+        vm.expectRevert(abi.encodeWithSelector(Controller.Controller__TargetNotAContract.selector, STRANGER));
+        controller.execute(IController.Action.InstallModule, STRANGER);
+    }
+
+    function testInstallModuleRevertsForDuplicateKeycode() public {
+        PriceModule module = new PriceModule();
+        PriceModule duplicate = new PriceModule();
+
+        controller.execute(IController.Action.InstallModule, address(module));
+
+        vm.expectRevert();
+        controller.execute(IController.Action.InstallModule, address(duplicate));
+    }
+
+    function testUpgradeModuleReplacesModuleForKeycode() public {
+        PriceModule oldModule = new PriceModule();
+        PriceModule newModule = new PriceModule();
+        Keycode price = PRICE_KEYCODE;
+
+        controller.execute(IController.Action.InstallModule, address(oldModule));
+        controller.execute(IController.Action.UpgradeModule, address(newModule));
+
+        assertEq(controller.moduleForKeycode(price), address(newModule));
+        assertEq(Keycode.unwrap(controller.keycodeForModule(address(oldModule))), Keycode.unwrap(EMPTY_KEYCODE));
+        assertEq(Keycode.unwrap(controller.keycodeForModule(address(newModule))), Keycode.unwrap(price));
+        assertTrue(newModule.initialized());
+    }
+
+    function testInstallPolicyRegistersKeycode() public {
+        AuctionPolicy policy = new AuctionPolicy();
+        Keycode auction = AUCTION_KEYCODE;
+
+        vm.expectEmit(true, true, false, true, address(controller));
+        emit Controller.PolicyInstalled(auction, address(policy));
+
+        controller.execute(IController.Action.InstallPolicy, address(policy));
+
+        assertEq(controller.policyForKeycode(auction), address(policy));
+        assertEq(Keycode.unwrap(controller.keycodeForPolicy(address(policy))), Keycode.unwrap(auction));
+        assertEq(Keycode.unwrap(controller.policyKeycodeAt(0)), Keycode.unwrap(auction));
+    }
+
+    function testActivatePolicyConfiguresDependenciesAndPermissions() public {
+        PriceModule module = new PriceModule();
+        AuctionPolicy policy = new AuctionPolicy();
+        Keycode price = PRICE_KEYCODE;
+        Keycode auction = AUCTION_KEYCODE;
+
+        controller.execute(IController.Action.InstallModule, address(module));
+        controller.execute(IController.Action.ActivateModule, address(module));
+        controller.execute(IController.Action.InstallPolicy, address(policy));
+        controller.execute(IController.Action.ActivatePolicy, address(policy));
+
+        assertTrue(controller.activePolicies(auction));
+        assertTrue(policy.configured());
+        assertEq(Keycode.unwrap(controller.policyDependencyAt(auction, 0)), Keycode.unwrap(price));
+        assertTrue(controller.policyPermissions(price, auction, PriceModule.price.selector));
+    }
+
+    function testActivatePolicyRevertsWhenDependencyMissing() public {
+        MissingDependencyPolicy policy = new MissingDependencyPolicy();
+
+        controller.execute(IController.Action.InstallPolicy, address(policy));
+
+        vm.expectRevert();
+        controller.execute(IController.Action.ActivatePolicy, address(policy));
+    }
+
+    function testUpgradePolicyReplacesPolicyAndPreservesActiveState() public {
+        PriceModule module = new PriceModule();
+        AuctionPolicy oldPolicy = new AuctionPolicy();
+        AuctionPolicy newPolicy = new AuctionPolicy();
+        Keycode auction = AUCTION_KEYCODE;
+        Keycode price = PRICE_KEYCODE;
+
+        controller.execute(IController.Action.InstallModule, address(module));
+        controller.execute(IController.Action.ActivateModule, address(module));
+        controller.execute(IController.Action.InstallPolicy, address(oldPolicy));
+        controller.execute(IController.Action.ActivatePolicy, address(oldPolicy));
+
+        controller.execute(IController.Action.UpgradePolicy, address(newPolicy));
+
+        assertEq(controller.policyForKeycode(auction), address(newPolicy));
+        assertEq(Keycode.unwrap(controller.keycodeForPolicy(address(oldPolicy))), Keycode.unwrap(EMPTY_KEYCODE));
+        assertEq(Keycode.unwrap(controller.keycodeForPolicy(address(newPolicy))), Keycode.unwrap(auction));
+        assertTrue(controller.activePolicies(auction));
+        assertTrue(controller.policyPermissions(price, auction, PriceModule.price.selector));
+    }
+
+    function testSetModulePermissionUpdatesSelectorPermission() public {
+        AuctionModule module = new AuctionModule();
+
+        controller.execute(IController.Action.InstallModule, address(module));
+        controller.execute(IController.Action.ActivateModule, address(module));
+
+        vm.expectEmit(true, true, false, true, address(controller));
+        emit Controller.ModulePermissionUpdated(AUCTION_KEYCODE, Controller.clearAuction.selector, true);
+
+        controller.setModulePermission(AUCTION_KEYCODE, Controller.clearAuction.selector, true);
+
+        assertTrue(controller.modulePermissions(Controller.clearAuction.selector, AUCTION_KEYCODE));
+    }
+
+    function testSetModulePermissionRevertsForInactiveModule() public {
+        AuctionModule module = new AuctionModule();
+
+        controller.execute(IController.Action.InstallModule, address(module));
+
+        vm.expectRevert(abi.encodeWithSelector(Controller.Controller__ModuleNotActive.selector, AUCTION_KEYCODE));
+        controller.setModulePermission(AUCTION_KEYCODE, Controller.clearAuction.selector, true);
+    }
+
+    function testClearAuctionRevertsForUnpermittedModule() public {
+        AuctionModule module = _installActiveAuctionModule();
+        Controller.AuctionSettlement memory settlement = _auctionSettlement();
+
+        vm.expectRevert(Controller.Controller__ModulePermissionDenied.selector);
+        module.clearAuction(controller, settlement);
+    }
+
+    function testClearAuctionSettlesMultipleAssetsAndCreditsBuckets() public {
+        AuctionModule module = _installActiveAuctionModule();
+        controller.setModulePermission(AUCTION_KEYCODE, Controller.clearAuction.selector, true);
+        Controller.AuctionSettlement memory settlement = _auctionSettlement();
+
+        module.clearAuction(controller, settlement);
+
+        uint256 firstProtocolCut = _protocolCut(1_000e18);
+        uint256 secondProtocolCut = _protocolCut(500e18);
+
+        assertEq(asset.balanceOf(address(vault)), 1_000e18 - firstProtocolCut);
+        assertEq(assetTwo.balanceOf(address(vault)), 500e18 - secondProtocolCut);
+        assertEq(asset.balanceOf(controller.PROTOCOL_COLLECTOR()), firstProtocolCut);
+        assertEq(assetTwo.balanceOf(controller.PROTOCOL_COLLECTOR()), secondProtocolCut);
+
+        assertEq(uint256(kernel.viewData(_amountSlot(BACKING_AMOUNT_SLOT, address(asset)))), 300e18);
+        assertEq(uint256(kernel.viewData(_amountSlot(TEAM_AMOUNT_SLOT, address(asset)))), 200e18);
+        assertEq(uint256(kernel.viewData(_amountSlot(TREASURY_AMOUNT_SLOT, address(asset)))), 475e18);
+
+        assertEq(uint256(kernel.viewData(_amountSlot(BACKING_AMOUNT_SLOT, address(assetTwo)))), 100e18);
+        assertEq(uint256(kernel.viewData(_amountSlot(TEAM_AMOUNT_SLOT, address(assetTwo)))), 50e18);
+        assertEq(uint256(kernel.viewData(_amountSlot(TREASURY_AMOUNT_SLOT, address(assetTwo)))), 337.5e18);
+    }
+
+    function testClearAuctionRevertsForInvalidSplit() public {
+        AuctionModule module = _installActiveAuctionModule();
+        controller.setModulePermission(AUCTION_KEYCODE, Controller.clearAuction.selector, true);
+        Controller.AuctionSettlement memory settlement = _auctionSettlement();
+        settlement.assets[0].teamAmount += 1;
+
+        vm.expectRevert(Controller.Controller__InvalidAuctionSettlement.selector);
+        module.clearAuction(controller, settlement);
+    }
+
+    function testClearAuctionRevertsForZeroPayer() public {
+        AuctionModule module = _installActiveAuctionModule();
+        controller.setModulePermission(AUCTION_KEYCODE, Controller.clearAuction.selector, true);
+        Controller.AuctionSettlement memory settlement = _auctionSettlement();
+        settlement.payer = address(0);
+
+        vm.expectRevert(Controller.Controller__ZeroAddress.selector);
+        module.clearAuction(controller, settlement);
+    }
+
+    function testVaultConstructorRevertsForZeroController() public {
+        vm.expectRevert(Vault.Vault__MisconfiguredSetup.selector);
+        new Vault(address(0), address(kernel));
+    }
+
+    function testVaultConstructorRevertsForZeroKernel() public {
+        vm.expectRevert(Vault.Vault__MisconfiguredSetup.selector);
+        new Vault(address(controller), address(0));
+    }
+
+    function testVaultTransferRevertsWhenCallerIsNotController() public {
+        vm.expectRevert(Vault.Vault__OnlyController.selector);
+        vault.transferTreasuryAsset(IVaultCore.TreasuryCall({asset: address(asset), to: RECIPIENT, amount: 1e18}));
+    }
+
+    function testVaultTransferTreasuryAssetAllowsController() public {
         asset.mint(address(vault), 100e18);
-        _seedBucket(TREASURY_AMOUNT_SLOT, address(asset), 100e18);
+        _storeBucket(kernel, TREASURY_AMOUNT_SLOT, address(asset), 100e18);
 
-        vault.transferTreasuryAsset(IVault.TreasuryCall({asset: address(asset), to: RECIPIENT, amount: 40e18}));
+        vm.prank(address(controller));
+        vault.transferTreasuryAsset(IVaultCore.TreasuryCall({asset: address(asset), to: RECIPIENT, amount: 40e18}));
 
         assertEq(asset.balanceOf(RECIPIENT), 40e18);
         assertEq(asset.balanceOf(address(vault)), 60e18);
         assertEq(uint256(kernel.viewData(_amountSlot(TREASURY_AMOUNT_SLOT, address(asset)))), 60e18);
     }
 
-    function testTransferTreasuryAssetRevertsForUnauthorizedCaller() public {
-        vm.expectRevert(Vault.Vault__RestrictedAccess.selector);
-        vm.prank(STRANGER);
-        vault.transferTreasuryAsset(IVault.TreasuryCall({asset: address(asset), to: RECIPIENT, amount: 1e18}));
-    }
-
-    function testTransferTreasuryAssetsTransfersTokensAndUpdatesAccounting() public {
-        asset.mint(address(vault), 90e18);
-        assetTwo.mint(address(vault), 80e18);
-        _seedBucket(TREASURY_AMOUNT_SLOT, address(asset), 90e18);
-        _seedBucket(TREASURY_AMOUNT_SLOT, address(assetTwo), 80e18);
-
-        IVault.TreasuryCall[] memory calls = new IVault.TreasuryCall[](2);
-        calls[0] = IVault.TreasuryCall({asset: address(asset), to: RECIPIENT, amount: 30e18});
-        calls[1] = IVault.TreasuryCall({asset: address(assetTwo), to: RECIPIENT_TWO, amount: 20e18});
-
-        vault.transferTreasuryAssets(calls);
-
-        assertEq(asset.balanceOf(RECIPIENT), 30e18);
-        assertEq(assetTwo.balanceOf(RECIPIENT_TWO), 20e18);
-        assertEq(uint256(kernel.viewData(_amountSlot(TREASURY_AMOUNT_SLOT, address(asset)))), 60e18);
-        assertEq(uint256(kernel.viewData(_amountSlot(TREASURY_AMOUNT_SLOT, address(assetTwo)))), 60e18);
-    }
-
-    function testTransferTreasuryAssetsRevertsForUnauthorizedCaller() public {
-        IVault.TreasuryCall[] memory calls = new IVault.TreasuryCall[](1);
-        calls[0] = IVault.TreasuryCall({asset: address(asset), to: RECIPIENT, amount: 1e18});
-
-        vm.expectRevert(Vault.Vault__RestrictedAccess.selector);
-        vm.prank(STRANGER);
-        vault.transferTreasuryAssets(calls);
-    }
-
-    function testTransferRedeemTransfersTokensAndUpdatesAccounting() public {
-        asset.mint(address(vault), 100e18);
-        assetTwo.mint(address(vault), 60e18);
-        _seedBucket(BACKING_AMOUNT_SLOT, address(asset), 100e18);
-        _seedBucket(BACKING_AMOUNT_SLOT, address(assetTwo), 60e18);
-
-        IVault.RedeemCall[] memory calls = new IVault.RedeemCall[](2);
-        calls[0] = IVault.RedeemCall({asset: address(asset), amount: 25e18});
-        calls[1] = IVault.RedeemCall({asset: address(assetTwo), amount: 15e18});
-
-        vault.transferRedeem(RECIPIENT, calls);
-
-        assertEq(asset.balanceOf(RECIPIENT), 25e18);
-        assertEq(assetTwo.balanceOf(RECIPIENT), 15e18);
-        assertEq(uint256(kernel.viewData(_amountSlot(BACKING_AMOUNT_SLOT, address(asset)))), 75e18);
-        assertEq(uint256(kernel.viewData(_amountSlot(BACKING_AMOUNT_SLOT, address(assetTwo)))), 45e18);
-    }
-
-    function testTransferRedeemRevertsForUnauthorizedCaller() public {
-        IVault.RedeemCall[] memory calls = new IVault.RedeemCall[](1);
-        calls[0] = IVault.RedeemCall({asset: address(asset), amount: 1e18});
-
-        vm.expectRevert(Vault.Vault__RestrictedAccess.selector);
-        vm.prank(STRANGER);
-        vault.transferRedeem(RECIPIENT, calls);
-    }
-
-    function testTransferTeamAssetTransfersTokensAndUpdatesAccounting() public {
-        asset.mint(address(vault), 30e18);
-        _seedBucket(TEAM_AMOUNT_SLOT, address(asset), 30e18);
-
-        vault.transferTeamAsset(IVault.TeamCall({to: RECIPIENT, asset: address(asset), amount: 10e18}));
-
-        assertEq(asset.balanceOf(RECIPIENT), 10e18);
-        assertEq(uint256(kernel.viewData(_amountSlot(TEAM_AMOUNT_SLOT, address(asset)))), 20e18);
-    }
-
-    function testTransferTeamAssetRevertsForUnauthorizedCaller() public {
-        vm.expectRevert(Vault.Vault__RestrictedAccess.selector);
-        vm.prank(STRANGER);
-        vault.transferTeamAsset(IVault.TeamCall({to: RECIPIENT, asset: address(asset), amount: 1e18}));
-    }
-
-    function testTransferTeamAssetsTransfersTokensAndUpdatesAccounting() public {
-        asset.mint(address(vault), 25e18);
-        assetTwo.mint(address(vault), 45e18);
-        _seedBucket(TEAM_AMOUNT_SLOT, address(asset), 25e18);
-        _seedBucket(TEAM_AMOUNT_SLOT, address(assetTwo), 45e18);
-
-        IVault.TeamCall[] memory calls = new IVault.TeamCall[](2);
-        calls[0] = IVault.TeamCall({to: RECIPIENT, asset: address(asset), amount: 5e18});
-        calls[1] = IVault.TeamCall({to: RECIPIENT_TWO, asset: address(assetTwo), amount: 15e18});
-
-        vault.transferTeamAssets(calls);
-
-        assertEq(asset.balanceOf(RECIPIENT), 5e18);
-        assertEq(assetTwo.balanceOf(RECIPIENT_TWO), 15e18);
-        assertEq(uint256(kernel.viewData(_amountSlot(TEAM_AMOUNT_SLOT, address(asset)))), 20e18);
-        assertEq(uint256(kernel.viewData(_amountSlot(TEAM_AMOUNT_SLOT, address(assetTwo)))), 30e18);
-    }
-
-    function testTransferTeamAssetsRevertsForUnauthorizedCaller() public {
-        IVault.TeamCall[] memory calls = new IVault.TeamCall[](1);
-        calls[0] = IVault.TeamCall({to: RECIPIENT, asset: address(asset), amount: 1e18});
-
-        vm.expectRevert(Vault.Vault__RestrictedAccess.selector);
-        vm.prank(STRANGER);
-        vault.transferTeamAssets(calls);
-    }
-
-    function testReceiveAssetCreditsTreasuryBucket() public {
+    function testVaultReceiveAssetAllowsController() public {
+        vm.prank(address(controller));
         vault.receiveAsset(
-            IVault.ReceiveCall({
-                from: address(this), asset: address(asset), amount: 50e18, bucket: IVault.Bucket.Treasury
+            IVaultCore.ReceiveCall({
+                from: address(this), asset: address(asset), amount: 50e18, bucket: IVaultCore.Bucket.Treasury
             })
         );
 
-        assertEq(uint256(kernel.viewData(_amountSlot(TREASURY_AMOUNT_SLOT, address(asset)))), 50e18);
-        assertEq(uint256(kernel.viewData(_amountSlot(BACKING_AMOUNT_SLOT, address(asset)))), 0);
-        assertEq(uint256(kernel.viewData(_amountSlot(TEAM_AMOUNT_SLOT, address(asset)))), 0);
         assertEq(asset.balanceOf(address(vault)), 50e18);
+        assertEq(uint256(kernel.viewData(_amountSlot(TREASURY_AMOUNT_SLOT, address(asset)))), 50e18);
     }
 
-    function testReceiveAssetRevertsForUnauthorizedCaller() public {
-        vm.expectRevert(Vault.Vault__RestrictedAccess.selector);
-        vm.prank(STRANGER);
-        vault.receiveAsset(
-            IVault.ReceiveCall({
-                from: address(this), asset: address(asset), amount: 1e18, bucket: IVault.Bucket.Backing
-            })
-        );
-    }
+    function testBackingBalancesReturnsEmptyWhenNoAssetsAreSeeded() public {
+        (Kernel readKernel, VaultHarness readVault) = _deployReadHarness();
 
-    function testReceiveAssetsCreditsConfiguredBuckets() public {
-        IVault.ReceiveCall[] memory calls = new IVault.ReceiveCall[](3);
-        calls[0] = IVault.ReceiveCall({
-            from: address(this), asset: address(asset), amount: 40e18, bucket: IVault.Bucket.Backing
-        });
-        calls[1] = IVault.ReceiveCall({
-            from: address(this), asset: address(assetTwo), amount: 30e18, bucket: IVault.Bucket.Treasury
-        });
-        calls[2] =
-            IVault.ReceiveCall({from: address(this), asset: address(asset), amount: 20e18, bucket: IVault.Bucket.Team});
+        IVaultCore.AssetBalance[] memory balances = readVault.backingBalances();
 
-        vault.receiveAssets(calls);
-
-        assertEq(uint256(kernel.viewData(_amountSlot(BACKING_AMOUNT_SLOT, address(asset)))), 40e18);
-        assertEq(uint256(kernel.viewData(_amountSlot(TREASURY_AMOUNT_SLOT, address(assetTwo)))), 30e18);
-        assertEq(uint256(kernel.viewData(_amountSlot(TEAM_AMOUNT_SLOT, address(asset)))), 20e18);
-        assertEq(asset.balanceOf(address(vault)), 60e18);
-        assertEq(assetTwo.balanceOf(address(vault)), 30e18);
-    }
-
-    function testReceiveAssetsRevertsForUnauthorizedCaller() public {
-        IVault.ReceiveCall[] memory calls = new IVault.ReceiveCall[](1);
-        calls[0] = IVault.ReceiveCall({
-            from: address(this), asset: address(asset), amount: 1e18, bucket: IVault.Bucket.Backing
-        });
-
-        vm.expectRevert(Vault.Vault__RestrictedAccess.selector);
-        vm.prank(STRANGER);
-        vault.receiveAssets(calls);
-    }
-
-    function testCreditRebucketsAccounting() public {
-        _seedBucket(TREASURY_AMOUNT_SLOT, address(asset), 25e18);
-
-        vault.credit(address(asset), 10e18, IVault.Bucket.Treasury, IVault.Bucket.Team);
-
-        assertEq(uint256(kernel.viewData(_amountSlot(TREASURY_AMOUNT_SLOT, address(asset)))), 15e18);
-        assertEq(uint256(kernel.viewData(_amountSlot(TEAM_AMOUNT_SLOT, address(asset)))), 10e18);
-    }
-
-    function testCreditRevertsForUnauthorizedCaller() public {
-        vm.expectRevert(Vault.Vault__RestrictedAccess.selector);
-        vm.prank(STRANGER);
-        vault.credit(address(asset), 1e18, IVault.Bucket.Treasury, IVault.Bucket.Team);
-    }
-
-    function testCreditRevertsWhenLoweringBacking() public {
-        vm.expectRevert(Vault.Vault__CannotLowerBacking.selector);
-        vault.credit(address(asset), 1e18, IVault.Bucket.Backing, IVault.Bucket.Team);
-    }
-
-    function testCreditsRebucketAccounting() public {
-        _seedBucket(TREASURY_AMOUNT_SLOT, address(asset), 20e18);
-        _seedBucket(TEAM_AMOUNT_SLOT, address(asset), 15e18);
-        _seedBucket(TEAM_AMOUNT_SLOT, address(assetTwo), 25e18);
-
-        IVault.CreditCall[] memory calls = new IVault.CreditCall[](2);
-        calls[0] = IVault.CreditCall({
-            from: IVault.Bucket.Treasury, to: IVault.Bucket.Backing, asset: address(asset), amount: 8e18
-        });
-        calls[1] = IVault.CreditCall({
-            from: IVault.Bucket.Team, to: IVault.Bucket.Treasury, asset: address(assetTwo), amount: 10e18
-        });
-
-        vault.credits(calls);
-
-        assertEq(uint256(kernel.viewData(_amountSlot(TREASURY_AMOUNT_SLOT, address(asset)))), 12e18);
-        assertEq(uint256(kernel.viewData(_amountSlot(BACKING_AMOUNT_SLOT, address(asset)))), 8e18);
-        assertEq(uint256(kernel.viewData(_amountSlot(TEAM_AMOUNT_SLOT, address(assetTwo)))), 15e18);
-        assertEq(uint256(kernel.viewData(_amountSlot(TREASURY_AMOUNT_SLOT, address(assetTwo)))), 10e18);
-    }
-
-    function testCreditsRevertsForUnauthorizedCaller() public {
-        IVault.CreditCall[] memory calls = new IVault.CreditCall[](1);
-        calls[0] = IVault.CreditCall({
-            from: IVault.Bucket.Treasury, to: IVault.Bucket.Team, asset: address(asset), amount: 1e18
-        });
-
-        vm.expectRevert(Vault.Vault__RestrictedAccess.selector);
-        vm.prank(STRANGER);
-        vault.credits(calls);
-    }
-
-    function testCreditsRevertsWhenLoweringBacking() public {
-        IVault.CreditCall[] memory calls = new IVault.CreditCall[](1);
-        calls[0] = IVault.CreditCall({
-            from: IVault.Bucket.Backing, to: IVault.Bucket.Team, asset: address(asset), amount: 1e18
-        });
-
-        vm.expectRevert(Vault.Vault__CannotLowerBacking.selector);
-        vault.credits(calls);
-    }
-
-    function testSyncSurplusCreditsUnaccountedTokens() public {
-        asset.mint(address(vault), 15e18);
-        _seedBucket(BACKING_AMOUNT_SLOT, address(asset), 4e18);
-        _seedBucket(TREASURY_AMOUNT_SLOT, address(asset), 3e18);
-        _seedBucket(TEAM_AMOUNT_SLOT, address(asset), 2e18);
-
-        vm.expectEmit(true, true, false, true, address(vault));
-        emit SurplusSynced(address(asset), IVault.Bucket.Team, 6e18);
-
-        vault.syncSurplus(address(asset), IVault.Bucket.Team);
-
-        assertEq(vault.exposedAccountedBalance(address(asset)), 15e18);
-        assertEq(uint256(kernel.viewData(_amountSlot(TEAM_AMOUNT_SLOT, address(asset)))), 8e18);
-    }
-
-    function testSyncSurplusRevertsForUnauthorizedCaller() public {
-        vm.expectRevert(Vault.Vault__RestrictedAccess.selector);
-        vm.prank(STRANGER);
-        vault.syncSurplus(address(asset), IVault.Bucket.Backing);
-    }
-
-    function testSyncSurplusRevertsWhenNoSurplusExists() public {
-        asset.mint(address(vault), 5e18);
-        _seedBucket(BACKING_AMOUNT_SLOT, address(asset), 2e18);
-        _seedBucket(TREASURY_AMOUNT_SLOT, address(asset), 2e18);
-        _seedBucket(TEAM_AMOUNT_SLOT, address(asset), 1e18);
-
-        vm.expectRevert(Vault.Vault__NoSurplus.selector);
-        vault.syncSurplus(address(asset), IVault.Bucket.Backing);
-    }
-
-    function testBackingBalancesReturnsEmptyWhenNoAssetsAreSeeded() public view {
-        IVault.AssetBalance[] memory balances = vault.backingBalances();
+        assertEq(address(readKernel), address(readVault.KERNEL()));
         assertEq(balances.length, 0);
     }
 
-    function testTreasuryBalancesReturnsEmptyWhenNoAssetsAreSeeded() public view {
-        IVault.AssetBalance[] memory balances = vault.treasuryBalances();
+    function testTreasuryBalancesReturnsEmptyWhenNoAssetsAreSeeded() public {
+        (, VaultHarness readVault) = _deployReadHarness();
+
+        IVaultCore.AssetBalance[] memory balances = readVault.treasuryBalances();
+
         assertEq(balances.length, 0);
     }
 
-    function testExposedReadAssetsReturnsEmptyWhenNoAssetsAreSeeded() public view {
-        address[] memory assetsRead = vault.exposedReadAssets();
+    function testExposedReadAssetsReturnsEmptyWhenNoAssetsAreSeeded() public {
+        (, VaultHarness readVault) = _deployReadHarness();
+
+        address[] memory assetsRead = readVault.exposedReadAssets();
+
         assertEq(assetsRead.length, 0);
     }
 
     function testBalanceViewsReturnSeededValues() public {
+        (Kernel readKernel, VaultHarness readVault) = _deployReadHarness();
         address[] memory assets_ = new address[](2);
         assets_[0] = address(asset);
         assets_[1] = address(assetTwo);
-        _seedAssets(assets_);
-        _seedBucket(BACKING_AMOUNT_SLOT, address(asset), 11e18);
-        _seedBucket(BACKING_AMOUNT_SLOT, address(assetTwo), 22e18);
-        _seedBucket(TREASURY_AMOUNT_SLOT, address(asset), 33e18);
-        _seedBucket(TREASURY_AMOUNT_SLOT, address(assetTwo), 44e18);
+        _seedAssets(readKernel, assets_);
+        _seedBucket(readKernel, BACKING_AMOUNT_SLOT, address(asset), 11e18);
+        _seedBucket(readKernel, BACKING_AMOUNT_SLOT, address(assetTwo), 22e18);
+        _seedBucket(readKernel, TREASURY_AMOUNT_SLOT, address(asset), 33e18);
+        _seedBucket(readKernel, TREASURY_AMOUNT_SLOT, address(assetTwo), 44e18);
 
-        IVault.AssetBalance[] memory backing = vault.backingBalances();
-        IVault.AssetBalance[] memory treasury = vault.treasuryBalances();
-        address[] memory assetsRead = vault.exposedReadAssets();
+        IVaultCore.AssetBalance[] memory backing = readVault.backingBalances();
+        IVaultCore.AssetBalance[] memory treasury = readVault.treasuryBalances();
+        address[] memory assetsRead = readVault.exposedReadAssets();
 
         assertEq(assetsRead.length, 2);
         assertEq(assetsRead[0], address(asset));
@@ -410,23 +498,75 @@ contract VaultTest is Test {
         assertEq(treasury[1].amount, 44e18);
     }
 
-    function testExposedNamespaceUncheckedPanicsForInvalidBucket() public {
-        vm.expectRevert(stdError.enumConversionError);
-        vault.exposedNamespaceUnchecked(3);
+    function testExposedAccountedBalanceReturnsSeededBucketSum() public {
+        (Kernel readKernel, VaultHarness readVault) = _deployReadHarness();
+        _seedBucket(readKernel, BACKING_AMOUNT_SLOT, address(asset), 4e18);
+        _seedBucket(readKernel, TREASURY_AMOUNT_SLOT, address(asset), 3e18);
+        _seedBucket(readKernel, TEAM_AMOUNT_SLOT, address(asset), 2e18);
+
+        assertEq(readVault.exposedAccountedBalance(address(asset)), 9e18);
     }
 
-    function _seedAssets(address[] memory assets_) internal {
-        kernel.updateState(ASSET_COUNT_SLOT, bytes32(assets_.length));
+    function testExposedNamespaceUncheckedPanicsForInvalidBucket() public {
+        (, VaultHarness readVault) = _deployReadHarness();
+
+        vm.expectRevert(stdError.enumConversionError);
+        readVault.exposedNamespaceUnchecked(3);
+    }
+
+    function _deployReadHarness() internal returns (Kernel readKernel, VaultHarness readVault) {
+        readKernel = new Kernel(address(this));
+        readVault = new VaultHarness(address(this), address(readKernel));
+    }
+
+    function _installActiveAuctionModule() internal returns (AuctionModule module) {
+        module = new AuctionModule();
+        controller.execute(IController.Action.InstallModule, address(module));
+        controller.execute(IController.Action.ActivateModule, address(module));
+    }
+
+    function _auctionSettlement() internal view returns (Controller.AuctionSettlement memory settlement) {
+        settlement.payer = address(this);
+        settlement.assets = new Controller.AuctionAssetSettlement[](2);
+        settlement.assets[0] = Controller.AuctionAssetSettlement({
+            asset: address(asset),
+            grossAmount: 1_000e18,
+            backingAmount: 300e18,
+            treasuryAmount: 475e18,
+            teamAmount: 200e18
+        });
+        settlement.assets[1] = Controller.AuctionAssetSettlement({
+            asset: address(assetTwo),
+            grossAmount: 500e18,
+            backingAmount: 100e18,
+            treasuryAmount: 337.5e18,
+            teamAmount: 50e18
+        });
+    }
+
+    function _protocolCut(uint256 grossAmount) internal pure returns (uint256) {
+        uint256 product = grossAmount * AUCTION_FEE_BPS;
+        uint256 result = product / BPS;
+        if (product % BPS != 0) ++result;
+        return result;
+    }
+
+    function _seedAssets(Kernel targetKernel, address[] memory assets_) internal {
+        targetKernel.updateState(ASSET_COUNT_SLOT, bytes32(assets_.length));
         for (uint256 i = 0; i < assets_.length;) {
-            kernel.updateState(_slotOffset(ASSET_BASE_SLOT, i), bytes32(uint256(uint160(assets_[i]))));
+            targetKernel.updateState(_slotOffset(ASSET_BASE_SLOT, i), bytes32(uint256(uint160(assets_[i]))));
             unchecked {
                 ++i;
             }
         }
     }
 
-    function _seedBucket(bytes32 namespace, address token, uint256 amount) internal {
-        kernel.updateState(_amountSlot(namespace, token), bytes32(amount));
+    function _seedBucket(Kernel targetKernel, bytes32 namespace, address token, uint256 amount) internal {
+        targetKernel.updateState(_amountSlot(namespace, token), bytes32(amount));
+    }
+
+    function _storeBucket(Kernel targetKernel, bytes32 namespace, address token, uint256 amount) internal {
+        vm.store(address(targetKernel), _amountSlot(namespace, token), bytes32(amount));
     }
 
     function _amountSlot(bytes32 namespace, address token) internal pure returns (bytes32 slot) {

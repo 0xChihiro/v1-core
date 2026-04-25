@@ -2,40 +2,15 @@
 pragma solidity 0.8.34;
 
 import {Test} from "forge-std/Test.sol";
-import {IController} from "../src/interfaces/IController.sol";
 import {IKernel} from "../src/interfaces/IKernel.sol";
 import {Kernel} from "../src/Kernel.sol";
 
-contract ControllerMock is IController {
-    mapping(address => bool) internal permissioned;
-    mapping(address => bool) internal access;
-
-    function setPermissioned(address caller, bool isAllowed) external {
-        permissioned[caller] = isAllowed;
-    }
-
-    function isPermissioned(address caller) external view returns (bool) {
-        return permissioned[caller];
-    }
-
-    function setAccess(address caller, bool isAllowed) external {
-        access[caller] = isAllowed;
-    }
-
-    function vaultAccess(address caller) external view returns (bool) {
-        return access[caller];
-    }
-}
-
 contract KernelTest is Test {
-    ControllerMock internal controller;
     Kernel internal kernel;
-    address internal constant WRITER = address(0xBEEF);
     address internal constant STRANGER = address(0xCAFE);
 
     function setUp() public {
-        controller = new ControllerMock();
-        kernel = new Kernel(address(controller));
+        kernel = new Kernel(address(this));
     }
 
     function testConstructorRevertsForZeroController() public {
@@ -47,8 +22,6 @@ contract KernelTest is Test {
         bytes32 startSlot = bytes32(uint256(7));
         bytes memory data = abi.encode(bytes32(uint256(11)), bytes32(uint256(22)), bytes32(uint256(33)));
 
-        controller.setPermissioned(WRITER, true);
-        vm.prank(WRITER);
         kernel.updateState(startSlot, data);
 
         assertEq(vm.load(address(kernel), startSlot), bytes32(uint256(11)));
@@ -62,8 +35,6 @@ contract KernelTest is Test {
         vm.store(address(kernel), startSlot, bytes32(uint256(555)));
         vm.store(address(kernel), _slotOffset(startSlot, 1), bytes32(uint256(777)));
 
-        controller.setPermissioned(WRITER, true);
-        vm.prank(WRITER);
         kernel.updateState(startSlot, bytes(""));
 
         assertEq(vm.load(address(kernel), startSlot), bytes32(uint256(555)));
@@ -74,8 +45,6 @@ contract KernelTest is Test {
         bytes32 slot = bytes32(uint256(17));
         bytes32 value = bytes32(uint256(999));
 
-        controller.setPermissioned(WRITER, true);
-        vm.prank(WRITER);
         kernel.updateState(slot, value);
 
         assertEq(vm.load(address(kernel), slot), value);
@@ -87,8 +56,6 @@ contract KernelTest is Test {
         calls[1] = IKernel.KernelCall({slot: bytes32(uint256(32)), data: bytes32(uint256(222))});
         calls[2] = IKernel.KernelCall({slot: bytes32(uint256(33)), data: bytes32(uint256(333))});
 
-        controller.setPermissioned(WRITER, true);
-        vm.prank(WRITER);
         kernel.updateState(calls);
 
         assertEq(vm.load(address(kernel), calls[0].slot), calls[0].data);
@@ -102,8 +69,6 @@ contract KernelTest is Test {
 
         vm.store(address(kernel), slot, bytes32(uint256(444)));
 
-        controller.setPermissioned(WRITER, true);
-        vm.prank(WRITER);
         kernel.updateState(calls);
 
         assertEq(vm.load(address(kernel), slot), bytes32(uint256(444)));
@@ -113,9 +78,6 @@ contract KernelTest is Test {
         bytes32 slot = bytes32(uint256(51));
 
         vm.store(address(kernel), slot, bytes32(uint256(10)));
-        controller.setPermissioned(WRITER, true);
-
-        vm.prank(WRITER);
         kernel.add(slot, bytes32(uint256(7)));
 
         assertEq(vm.load(address(kernel), slot), bytes32(uint256(17)));
@@ -132,8 +94,6 @@ contract KernelTest is Test {
         calls[0] = IKernel.KernelCall({slot: slotOne, data: bytes32(uint256(7))});
         calls[1] = IKernel.KernelCall({slot: slotTwo, data: bytes32(uint256(9))});
 
-        controller.setPermissioned(WRITER, true);
-        vm.prank(WRITER);
         kernel.add(calls);
 
         assertEq(vm.load(address(kernel), slotOne), bytes32(uint256(17)));
@@ -144,10 +104,7 @@ contract KernelTest is Test {
         bytes32 slot = bytes32(uint256(54));
 
         vm.store(address(kernel), slot, bytes32(type(uint256).max));
-        controller.setPermissioned(WRITER, true);
-
         vm.expectRevert(Kernel.Kernel__AddOverflow.selector);
-        vm.prank(WRITER);
         kernel.add(slot, bytes32(uint256(1)));
 
         assertEq(vm.load(address(kernel), slot), bytes32(type(uint256).max));
@@ -164,10 +121,7 @@ contract KernelTest is Test {
         calls[0] = IKernel.KernelCall({slot: slotOne, data: bytes32(uint256(7))});
         calls[1] = IKernel.KernelCall({slot: slotTwo, data: bytes32(uint256(1))});
 
-        controller.setPermissioned(WRITER, true);
-
         vm.expectRevert(Kernel.Kernel__AddOverflow.selector);
-        vm.prank(WRITER);
         kernel.add(calls);
 
         assertEq(vm.load(address(kernel), slotOne), bytes32(uint256(10)));
@@ -178,9 +132,6 @@ contract KernelTest is Test {
         bytes32 slot = bytes32(uint256(57));
 
         vm.store(address(kernel), slot, bytes32(uint256(20)));
-        controller.setPermissioned(WRITER, true);
-
-        vm.prank(WRITER);
         kernel.sub(slot, bytes32(uint256(7)));
 
         assertEq(vm.load(address(kernel), slot), bytes32(uint256(13)));
@@ -197,8 +148,6 @@ contract KernelTest is Test {
         calls[0] = IKernel.KernelCall({slot: slotOne, data: bytes32(uint256(7))});
         calls[1] = IKernel.KernelCall({slot: slotTwo, data: bytes32(uint256(9))});
 
-        controller.setPermissioned(WRITER, true);
-        vm.prank(WRITER);
         kernel.sub(calls);
 
         assertEq(vm.load(address(kernel), slotOne), bytes32(uint256(13)));
@@ -209,10 +158,7 @@ contract KernelTest is Test {
         bytes32 slot = bytes32(uint256(60));
 
         vm.store(address(kernel), slot, bytes32(uint256(5)));
-        controller.setPermissioned(WRITER, true);
-
         vm.expectRevert(Kernel.Kernel__SubUnderflow.selector);
-        vm.prank(WRITER);
         kernel.sub(slot, bytes32(uint256(6)));
 
         assertEq(vm.load(address(kernel), slot), bytes32(uint256(5)));
@@ -229,10 +175,7 @@ contract KernelTest is Test {
         calls[0] = IKernel.KernelCall({slot: slotOne, data: bytes32(uint256(7))});
         calls[1] = IKernel.KernelCall({slot: slotTwo, data: bytes32(uint256(6))});
 
-        controller.setPermissioned(WRITER, true);
-
         vm.expectRevert(Kernel.Kernel__SubUnderflow.selector);
-        vm.prank(WRITER);
         kernel.sub(calls);
 
         assertEq(vm.load(address(kernel), slotOne), bytes32(uint256(20)));
@@ -299,21 +242,18 @@ contract KernelTest is Test {
     function testUpdateStateRevertsOnPartialWord() public {
         bytes memory data = hex"1234";
 
-        controller.setPermissioned(WRITER, true);
-
         vm.expectRevert(Kernel.Kernel__InvalidSlotDataLength.selector);
-        vm.prank(WRITER);
         kernel.updateState(bytes32(uint256(1)), data);
     }
 
     function testUpdateStateRevertsForUnauthorizedCaller() public {
-        vm.expectRevert(Kernel.Kernel__InvalidCaller.selector);
+        vm.expectRevert(Kernel.Kernel__OnlyController.selector);
         vm.prank(STRANGER);
         kernel.updateState(bytes32(uint256(1)), abi.encode(bytes32(uint256(123))));
     }
 
     function testUpdateStateSingleSlotRevertsForUnauthorizedCaller() public {
-        vm.expectRevert(Kernel.Kernel__InvalidCaller.selector);
+        vm.expectRevert(Kernel.Kernel__OnlyController.selector);
         vm.prank(STRANGER);
         kernel.updateState(bytes32(uint256(1)), bytes32(uint256(123)));
     }
@@ -322,13 +262,13 @@ contract KernelTest is Test {
         IKernel.KernelCall[] memory calls = new IKernel.KernelCall[](1);
         calls[0] = IKernel.KernelCall({slot: bytes32(uint256(1)), data: bytes32(uint256(123))});
 
-        vm.expectRevert(Kernel.Kernel__InvalidCaller.selector);
+        vm.expectRevert(Kernel.Kernel__OnlyController.selector);
         vm.prank(STRANGER);
         kernel.updateState(calls);
     }
 
     function testAddSingleSlotRevertsForUnauthorizedCaller() public {
-        vm.expectRevert(Kernel.Kernel__InvalidCaller.selector);
+        vm.expectRevert(Kernel.Kernel__OnlyAccountingWriter.selector);
         vm.prank(STRANGER);
         kernel.add(bytes32(uint256(1)), bytes32(uint256(123)));
     }
@@ -337,13 +277,13 @@ contract KernelTest is Test {
         IKernel.KernelCall[] memory calls = new IKernel.KernelCall[](1);
         calls[0] = IKernel.KernelCall({slot: bytes32(uint256(1)), data: bytes32(uint256(123))});
 
-        vm.expectRevert(Kernel.Kernel__InvalidCaller.selector);
+        vm.expectRevert(Kernel.Kernel__OnlyAccountingWriter.selector);
         vm.prank(STRANGER);
         kernel.add(calls);
     }
 
     function testSubSingleSlotRevertsForUnauthorizedCaller() public {
-        vm.expectRevert(Kernel.Kernel__InvalidCaller.selector);
+        vm.expectRevert(Kernel.Kernel__OnlyAccountingWriter.selector);
         vm.prank(STRANGER);
         kernel.sub(bytes32(uint256(1)), bytes32(uint256(123)));
     }
@@ -352,18 +292,15 @@ contract KernelTest is Test {
         IKernel.KernelCall[] memory calls = new IKernel.KernelCall[](1);
         calls[0] = IKernel.KernelCall({slot: bytes32(uint256(1)), data: bytes32(uint256(123))});
 
-        vm.expectRevert(Kernel.Kernel__InvalidCaller.selector);
+        vm.expectRevert(Kernel.Kernel__OnlyAccountingWriter.selector);
         vm.prank(STRANGER);
         kernel.sub(calls);
     }
 
-    function testUpdateStateRevertsAfterControllerRevokesCaller() public {
-        controller.setPermissioned(WRITER, true);
-        controller.setPermissioned(WRITER, false);
-
-        vm.expectRevert(Kernel.Kernel__InvalidCaller.selector);
-        vm.prank(WRITER);
+    function testUpdateStateAllowsConfiguredController() public {
         kernel.updateState(bytes32(uint256(1)), abi.encode(bytes32(uint256(123))));
+
+        assertEq(vm.load(address(kernel), bytes32(uint256(1))), bytes32(uint256(123)));
     }
 
     function _slotOffset(bytes32 slot, uint256 offset) internal pure returns (bytes32) {

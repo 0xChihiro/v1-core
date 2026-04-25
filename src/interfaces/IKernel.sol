@@ -6,6 +6,8 @@ interface IKernel {
         bytes32 slot;
         bytes32 data;
     }
+    function accountingWriter() external view returns (address);
+    function setAccountingWriter(address) external;
     function updateState(bytes32, bytes calldata) external;
     function updateState(bytes32, bytes32) external;
     function updateState(KernelCall[] calldata) external;

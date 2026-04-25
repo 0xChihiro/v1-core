@@ -1,7 +1,6 @@
 ///SPDX-License-Identifier: MIT
 pragma solidity 0.8.34;
 
-import {IController} from "./interfaces/IController.sol";
 import {IKernel} from "./interfaces/IKernel.sol";
 import {IVault} from "./interfaces/IVault.sol";
 import {IERC20} from "openzeppelin/contracts/token/ERC20/IERC20.sol";
@@ -18,7 +17,7 @@ contract Vault is IVault {
     bytes32 internal constant ASSET_BASE_SLOT = 0x1a27d05721698994f0e5408d30550ae696157097140b4a919a081b62c08e625f; // equivilant to keccak256("enten.backing.assets");
 
     // ---------------------- IMMUTABLES  -------------------------------------- \\
-    IController public immutable CONTROLLER;
+    address public immutable CONTROLLER;
     IKernel public immutable KERNEL;
 
     // ---------------------- EVENTS -------------------------------------------- \\
@@ -26,110 +25,105 @@ contract Vault is IVault {
 
     // ---------------------- ERRORS -------------------------------------------- \\
     error Vault__CannotLowerBacking();
-    error Vault__ExceedsTreasuryBalance();
     error Vault__InvalidBucket();
     error Vault__MisconfiguredSetup();
     error Vault__NoSurplus();
-    error Vault__RestrictedAccess();
+    error Vault__OnlyController();
 
     constructor(address controller, address kernel) {
         if (controller == address(0) || kernel == address(0)) revert Vault__MisconfiguredSetup();
-        CONTROLLER = IController(controller);
+        CONTROLLER = controller;
         KERNEL = IKernel(kernel);
     }
 
-    function transferTreasuryAsset(IVault.TreasuryCall calldata call) external {
-        if (!CONTROLLER.vaultAccess(msg.sender)) revert Vault__RestrictedAccess();
-        bytes32 slot = _treasuryAmountSlot(call.asset);
+    modifier onlyController() {
+        _onlyController();
+        _;
+    }
+
+    function _onlyController() internal view {
+        if (msg.sender != CONTROLLER) revert Vault__OnlyController();
+    }
+
+    function transferTreasuryAsset(IVault.TreasuryCall calldata call) external onlyController {
         IERC20(call.asset).safeTransfer(call.to, call.amount);
-        KERNEL.sub(slot, bytes32(call.amount));
+        KERNEL.sub(_treasuryAmountSlot(call.asset), bytes32(call.amount));
     }
 
-    function transferTreasuryAssets(IVault.TreasuryCall[] calldata calls) external {
-        if (!CONTROLLER.vaultAccess(msg.sender)) revert Vault__RestrictedAccess();
-        IKernel.KernelCall[] memory updateCalls = new IKernel.KernelCall[](calls.length);
+    function transferTreasuryAssets(IVault.TreasuryCall[] calldata calls) external onlyController {
+        IKernel.KernelCall[] memory subCalls = new IKernel.KernelCall[](calls.length);
         for (uint256 i = 0; i < calls.length; i++) {
-            bytes32 slot = _treasuryAmountSlot(calls[i].asset);
             IERC20(calls[i].asset).safeTransfer(calls[i].to, calls[i].amount);
-            updateCalls[i] = IKernel.KernelCall({slot: slot, data: bytes32(calls[i].amount)});
+            subCalls[i] =
+                IKernel.KernelCall({slot: _treasuryAmountSlot(calls[i].asset), data: bytes32(calls[i].amount)});
         }
-        KERNEL.sub(updateCalls);
+        KERNEL.sub(subCalls);
     }
 
-    function transferRedeem(address to, IVault.RedeemCall[] calldata calls) external {
-        if (!CONTROLLER.vaultAccess(msg.sender)) revert Vault__RestrictedAccess();
-        IKernel.KernelCall[] memory updateCalls = new IKernel.KernelCall[](calls.length);
+    function transferRedeem(address to, IVault.RedeemCall[] calldata calls) external onlyController {
+        IKernel.KernelCall[] memory subCalls = new IKernel.KernelCall[](calls.length);
         for (uint256 i = 0; i < calls.length; i++) {
-            bytes32 slot = _backingAmountSlot(calls[i].asset);
             IERC20(calls[i].asset).safeTransfer(to, calls[i].amount);
-            updateCalls[i] = IKernel.KernelCall({slot: slot, data: bytes32(calls[i].amount)});
+            subCalls[i] = IKernel.KernelCall({slot: _backingAmountSlot(calls[i].asset), data: bytes32(calls[i].amount)});
         }
-        KERNEL.sub(updateCalls);
+        KERNEL.sub(subCalls);
     }
 
-    function transferTeamAsset(TeamCall calldata call) external {
-        if (!CONTROLLER.vaultAccess(msg.sender)) revert Vault__RestrictedAccess();
-        bytes32 slot = _teamAmountSlot(call.asset);
-        KERNEL.sub(slot, bytes32(call.amount));
+    function transferTeamAsset(TeamCall calldata call) external onlyController {
         IERC20(call.asset).safeTransfer(call.to, call.amount);
+        KERNEL.sub(_teamAmountSlot(call.asset), bytes32(call.amount));
     }
 
-    function transferTeamAssets(TeamCall[] calldata calls) external {
-        if (!CONTROLLER.vaultAccess(msg.sender)) revert Vault__RestrictedAccess();
-        IKernel.KernelCall[] memory updateCalls = new IKernel.KernelCall[](calls.length);
+    function transferTeamAssets(TeamCall[] calldata calls) external onlyController {
+        IKernel.KernelCall[] memory subCalls = new IKernel.KernelCall[](calls.length);
         for (uint256 i = 0; i < calls.length; i++) {
-            bytes32 slot = _teamAmountSlot(calls[i].asset);
             IERC20(calls[i].asset).safeTransfer(calls[i].to, calls[i].amount);
-            updateCalls[i] = IKernel.KernelCall({slot: slot, data: bytes32(calls[i].amount)});
+            subCalls[i] = IKernel.KernelCall({slot: _teamAmountSlot(calls[i].asset), data: bytes32(calls[i].amount)});
         }
-        KERNEL.sub(updateCalls);
+        KERNEL.sub(subCalls);
     }
 
-    function receiveAsset(IVault.ReceiveCall calldata call) external {
-        if (!CONTROLLER.vaultAccess(msg.sender)) revert Vault__RestrictedAccess();
+    // Transfers for borrows
+    // function transferBackingAsset() external onlyController {}
+    // function transferBackingAssets() external onlyController {}
+
+    function receiveAsset(IVault.ReceiveCall calldata call) external onlyController {
         IERC20(call.asset).safeTransferFrom(call.from, address(this), call.amount);
         KERNEL.add(_amountSlot(call.bucket, call.asset), bytes32(call.amount));
     }
 
-    function receiveAssets(IVault.ReceiveCall[] calldata calls) external {
-        if (!CONTROLLER.vaultAccess(msg.sender)) revert Vault__RestrictedAccess();
-        IKernel.KernelCall[] memory updateCalls = new IKernel.KernelCall[](calls.length);
+    function receiveAssets(IVault.ReceiveCall[] calldata calls) external onlyController {
+        IKernel.KernelCall[] memory addCalls = new IKernel.KernelCall[](calls.length);
         for (uint256 i = 0; i < calls.length; i++) {
             IERC20(calls[i].asset).safeTransferFrom(calls[i].from, address(this), calls[i].amount);
-            updateCalls[i] = IKernel.KernelCall({
+            addCalls[i] = IKernel.KernelCall({
                 slot: _amountSlot(calls[i].bucket, calls[i].asset), data: bytes32(calls[i].amount)
             });
         }
-        KERNEL.add(updateCalls);
+        KERNEL.add(addCalls);
     }
 
-    function credit(address asset, uint256 amount, Bucket from, Bucket to) external {
-        if (!CONTROLLER.vaultAccess(msg.sender)) revert Vault__RestrictedAccess();
+    function credit(address asset, uint256 amount, Bucket from, Bucket to) external onlyController {
         if (from == Bucket.Backing) revert Vault__CannotLowerBacking();
-        bytes32 fromSlot = _amountSlot(from, asset);
-        bytes32 toSlot = _amountSlot(to, asset);
-        KERNEL.add(toSlot, bytes32(amount));
-        KERNEL.sub(fromSlot, bytes32(amount));
+        KERNEL.sub(_amountSlot(from, asset), bytes32(amount));
+        KERNEL.add(_amountSlot(to, asset), bytes32(amount));
     }
 
-    function credits(CreditCall[] memory calls) external {
-        if (!CONTROLLER.vaultAccess(msg.sender)) revert Vault__RestrictedAccess();
-        IKernel.KernelCall[] memory addCalls = new IKernel.KernelCall[](calls.length);
+    function credits(CreditCall[] calldata calls) external onlyController {
         IKernel.KernelCall[] memory subCalls = new IKernel.KernelCall[](calls.length);
+        IKernel.KernelCall[] memory addCalls = new IKernel.KernelCall[](calls.length);
         for (uint256 i = 0; i < calls.length; i++) {
             if (calls[i].from == Bucket.Backing) revert Vault__CannotLowerBacking();
-            bytes32 toSlot = _amountSlot(calls[i].to, calls[i].asset);
-            bytes32 fromSlot = _amountSlot(calls[i].from, calls[i].asset);
-            addCalls[i] = IKernel.KernelCall({slot: toSlot, data: bytes32(calls[i].amount)});
-            subCalls[i] = IKernel.KernelCall({slot: fromSlot, data: bytes32(calls[i].amount)});
+            subCalls[i] =
+                IKernel.KernelCall({slot: _amountSlot(calls[i].from, calls[i].asset), data: bytes32(calls[i].amount)});
+            addCalls[i] =
+                IKernel.KernelCall({slot: _amountSlot(calls[i].to, calls[i].asset), data: bytes32(calls[i].amount)});
         }
         KERNEL.sub(subCalls);
         KERNEL.add(addCalls);
     }
 
-    function syncSurplus(address asset, Bucket bucket) external {
-        if (!CONTROLLER.vaultAccess(msg.sender)) revert Vault__RestrictedAccess();
-
+    function syncSurplus(address asset, Bucket bucket) external onlyController {
         uint256 actualBalance = IERC20(asset).balanceOf(address(this));
         uint256 accounted = _accountedBalance(asset);
 

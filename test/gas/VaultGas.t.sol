@@ -2,31 +2,9 @@
 pragma solidity 0.8.34;
 
 import {Test} from "forge-std/Test.sol";
-import {IController} from "../../src/interfaces/IController.sol";
 import {IVault} from "../../src/interfaces/IVault.sol";
 import {Kernel} from "../../src/Kernel.sol";
 import {Vault} from "../../src/Vault.sol";
-
-contract VaultGasControllerMock is IController {
-    mapping(address => bool) internal permissioned;
-    mapping(address => bool) internal access;
-
-    function setPermissioned(address caller, bool isAllowed) external {
-        permissioned[caller] = isAllowed;
-    }
-
-    function isPermissioned(address caller) external view returns (bool) {
-        return permissioned[caller];
-    }
-
-    function setAccess(address caller, bool isAllowed) external {
-        access[caller] = isAllowed;
-    }
-
-    function vaultAccess(address caller) external view returns (bool) {
-        return access[caller];
-    }
-}
 
 contract VaultReadHarness is Vault {
     constructor(address controller, address kernel) Vault(controller, kernel) {}
@@ -68,16 +46,12 @@ contract VaultGasTest is Test {
     bytes32 internal constant ASSET_COUNT_SLOT = 0xd635f114cc21f2834e679c2555d4ff475d8d6f01003ca6da1dfee13ecdf62738;
     bytes32 internal constant ASSET_BASE_SLOT = 0x1a27d05721698994f0e5408d30550ae696157097140b4a919a081b62c08e625f;
 
-    VaultGasControllerMock internal controller;
     Kernel internal kernel;
     VaultReadHarness internal vault;
 
     function setUp() public {
-        controller = new VaultGasControllerMock();
-        kernel = new Kernel(address(controller));
-        vault = new VaultReadHarness(address(controller), address(kernel));
-
-        controller.setPermissioned(address(this), true);
+        kernel = new Kernel(address(this));
+        vault = new VaultReadHarness(address(this), address(kernel));
     }
 
     function testGasBackingBalances1Asset() public {
