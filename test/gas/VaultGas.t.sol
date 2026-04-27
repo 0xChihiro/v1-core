@@ -4,6 +4,7 @@ pragma solidity 0.8.34;
 import {Test} from "forge-std/Test.sol";
 import {IVault} from "../../src/interfaces/IVault.sol";
 import {Kernel} from "../../src/Kernel.sol";
+import {Slots} from "../../src/libraries/Slots.sol";
 import {Vault} from "../../src/Vault.sol";
 
 contract VaultReadHarness is Vault {
@@ -41,10 +42,10 @@ contract VaultReadHarness is Vault {
 }
 
 contract VaultGasTest is Test {
-    bytes32 internal constant TREASURY_AMOUNT_SLOT = 0x60b5ab302bbeea0c83917cc1819e272c0b2ec70ceb2f138a32d5caae015750f3;
-    bytes32 internal constant BACKING_AMOUNT_SLOT = 0x0024fb7f9ccb99221958049f86297fab788b0f0b640b3f50254c9bd56ccf0930;
-    bytes32 internal constant ASSET_COUNT_SLOT = 0xd635f114cc21f2834e679c2555d4ff475d8d6f01003ca6da1dfee13ecdf62738;
-    bytes32 internal constant ASSET_BASE_SLOT = 0x1a27d05721698994f0e5408d30550ae696157097140b4a919a081b62c08e625f;
+    bytes32 internal constant TREASURY_AMOUNT_SLOT = Slots.TREASURY_AMOUNT_SLOT;
+    bytes32 internal constant BACKING_AMOUNT_SLOT = Slots.BACKING_AMOUNT_SLOT;
+    bytes32 internal constant ASSET_COUNT_SLOT = Slots.ASSETS_LENGTH_SLOT;
+    bytes32 internal constant ASSET_BASE_SLOT = Slots.ASSETS_BASE_SLOT;
 
     Kernel internal kernel;
     VaultReadHarness internal vault;

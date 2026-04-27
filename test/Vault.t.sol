@@ -8,6 +8,7 @@ import {Controller} from "../src/Controller.sol";
 import {IController, IModule, IPolicy, Keycode, Permission} from "../src/interfaces/IController.sol";
 import {IVault as IVaultCore} from "../src/interfaces/IVault.sol";
 import {Kernel} from "../src/Kernel.sol";
+import {Slots} from "../src/libraries/Slots.sol";
 import {Vault} from "../src/Vault.sol";
 
 contract ERC20Mock is ERC20 {
@@ -89,8 +90,8 @@ contract AuctionModule is IModule {
         initialized = true;
     }
 
-    function clearAuction(Controller controller, Controller.AuctionSettlement calldata settlement) external {
-        controller.clearAuction(settlement);
+    function settle(Controller controller, Controller.Settlement calldata settlement) external {
+        controller.settle(settlement);
     }
 }
 
@@ -135,11 +136,11 @@ contract MissingDependencyPolicy is IPolicy {
 }
 
 contract VaultTest is Test {
-    bytes32 internal constant TREASURY_AMOUNT_SLOT = 0x60b5ab302bbeea0c83917cc1819e272c0b2ec70ceb2f138a32d5caae015750f3;
-    bytes32 internal constant BACKING_AMOUNT_SLOT = 0x0024fb7f9ccb99221958049f86297fab788b0f0b640b3f50254c9bd56ccf0930;
-    bytes32 internal constant TEAM_AMOUNT_SLOT = 0x1da01d8de7381a167e82accc7aa1ccc9122c1143bd9e81a0e9456adadd05678a;
-    bytes32 internal constant ASSET_COUNT_SLOT = 0xd635f114cc21f2834e679c2555d4ff475d8d6f01003ca6da1dfee13ecdf62738;
-    bytes32 internal constant ASSET_BASE_SLOT = 0x1a27d05721698994f0e5408d30550ae696157097140b4a919a081b62c08e625f;
+    bytes32 internal constant TREASURY_AMOUNT_SLOT = Slots.TREASURY_AMOUNT_SLOT;
+    bytes32 internal constant BACKING_AMOUNT_SLOT = Slots.BACKING_AMOUNT_SLOT;
+    bytes32 internal constant TEAM_AMOUNT_SLOT = Slots.TEAM_AMOUNT_SLOT;
+    bytes32 internal constant ASSET_COUNT_SLOT = Slots.ASSETS_LENGTH_SLOT;
+    bytes32 internal constant ASSET_BASE_SLOT = Slots.ASSETS_BASE_SLOT;
 
     Controller internal controller;
     Kernel internal kernel;
@@ -154,6 +155,7 @@ contract VaultTest is Test {
     Keycode internal constant EMPTY_KEYCODE = Keycode.wrap(0);
     Keycode internal constant PRICE_KEYCODE = Keycode.wrap(0x5052494345);
     Keycode internal constant AUCTION_KEYCODE = Keycode.wrap(0x415543544E);
+    bytes32 internal constant BORROW_STATE_SLOT = keccak256("enten.test.borrow.state");
     uint256 internal constant BPS = 10_000;
 
     function setUp() public {
@@ -174,6 +176,11 @@ contract VaultTest is Test {
         new Controller(address(0), PROTOCOL_COLLECTOR);
     }
 
+    function testControllerConstructorRevertsForZeroProtocolCollector() public {
+        vm.expectRevert(Controller.Controller__ZeroAddress.selector);
+        new Controller(address(this), address(0));
+    }
+
     function testControllerGrantsAdminAndExecutorRoles() public view {
         assertTrue(controller.hasRole(controller.DEFAULT_ADMIN_ROLE(), address(this)));
         assertTrue(controller.hasRole(controller.EXECUTOR_ROLE(), address(this)));
@@ -184,6 +191,7 @@ contract VaultTest is Test {
         assertEq(kernel.accountingWriter(), address(vault));
         assertEq(vault.CONTROLLER(), address(controller));
         assertEq(address(vault.KERNEL()), address(kernel));
+        assertEq(controller.TOKEN().CONTROLLER(), address(controller));
         assertEq(controller.PROTOCOL_COLLECTOR(), PROTOCOL_COLLECTOR);
     }
 
@@ -327,43 +335,66 @@ contract VaultTest is Test {
         assertTrue(controller.policyPermissions(price, auction, PriceModule.price.selector));
     }
 
-    function testSetModulePermissionUpdatesSelectorPermission() public {
+    function testSetMintPermissionUpdatesMintPermission() public {
         AuctionModule module = new AuctionModule();
 
         controller.execute(IController.Action.InstallModule, address(module));
         controller.execute(IController.Action.ActivateModule, address(module));
 
-        vm.expectEmit(true, true, false, true, address(controller));
-        emit Controller.ModulePermissionUpdated(AUCTION_KEYCODE, Controller.clearAuction.selector, true);
+        vm.expectEmit(true, false, false, true, address(controller));
+        emit Controller.MintPermissionUpdated(AUCTION_KEYCODE, true);
 
-        controller.setModulePermission(AUCTION_KEYCODE, Controller.clearAuction.selector, true);
+        controller.setMintPermission(AUCTION_KEYCODE, true);
 
-        assertTrue(controller.modulePermissions(Controller.clearAuction.selector, AUCTION_KEYCODE));
+        assertTrue(controller.mintPermissions(AUCTION_KEYCODE));
     }
 
-    function testSetModulePermissionRevertsForInactiveModule() public {
+    function testSetStatePermissionUpdatesNamespacePermission() public {
+        _installActiveAuctionModule();
+
+        vm.expectEmit(true, true, false, true, address(controller));
+        emit Controller.StatePermissionUpdated(AUCTION_KEYCODE, BORROW_STATE_SLOT, true);
+
+        controller.setStatePermission(AUCTION_KEYCODE, BORROW_STATE_SLOT, true);
+
+        assertTrue(controller.statePermissions(AUCTION_KEYCODE, BORROW_STATE_SLOT));
+    }
+
+    function testSetMintPermissionRevertsForInactiveModule() public {
         AuctionModule module = new AuctionModule();
 
         controller.execute(IController.Action.InstallModule, address(module));
 
         vm.expectRevert(abi.encodeWithSelector(Controller.Controller__ModuleNotActive.selector, AUCTION_KEYCODE));
-        controller.setModulePermission(AUCTION_KEYCODE, Controller.clearAuction.selector, true);
+        controller.setMintPermission(AUCTION_KEYCODE, true);
     }
 
-    function testClearAuctionRevertsForUnpermittedModule() public {
+    function testSettleRevertsForMintWithoutPermission() public {
         AuctionModule module = _installActiveAuctionModule();
-        Controller.AuctionSettlement memory settlement = _auctionSettlement();
+        _setMaxSupply(1_000_000e18);
+        Controller.Settlement memory settlement = _auctionSettlement();
 
-        vm.expectRevert(Controller.Controller__ModulePermissionDenied.selector);
-        module.clearAuction(controller, settlement);
+        vm.expectRevert(abi.encodeWithSelector(Controller.Controller__MintPermissionDenied.selector, AUCTION_KEYCODE));
+        module.settle(controller, settlement);
     }
 
-    function testClearAuctionSettlesMultipleAssetsAndCreditsBuckets() public {
+    function testSettleRevertsWhenMintExceedsMaxSupply() public {
         AuctionModule module = _installActiveAuctionModule();
-        controller.setModulePermission(AUCTION_KEYCODE, Controller.clearAuction.selector, true);
-        Controller.AuctionSettlement memory settlement = _auctionSettlement();
+        controller.setMintPermission(AUCTION_KEYCODE, true);
+        _setMaxSupply(50e18);
+        Controller.Settlement memory settlement = _auctionSettlement();
 
-        module.clearAuction(controller, settlement);
+        vm.expectRevert(abi.encodeWithSelector(Controller.Controller__MintExceedsMaxSupply.selector, 100e18, 50e18));
+        module.settle(controller, settlement);
+    }
+
+    function testSettleWithMintsSettlesMultipleAssetsAndCreditsBuckets() public {
+        AuctionModule module = _installActiveAuctionModule();
+        controller.setMintPermission(AUCTION_KEYCODE, true);
+        _setMaxSupply(1_000_000e18);
+        Controller.Settlement memory settlement = _auctionSettlement();
+
+        module.settle(controller, settlement);
 
         uint256 firstProtocolCut = _protocolCut(1_000e18);
         uint256 secondProtocolCut = _protocolCut(500e18);
@@ -380,26 +411,79 @@ contract VaultTest is Test {
         assertEq(uint256(kernel.viewData(_amountSlot(BACKING_AMOUNT_SLOT, address(assetTwo)))), 100e18);
         assertEq(uint256(kernel.viewData(_amountSlot(TEAM_AMOUNT_SLOT, address(assetTwo)))), 50e18);
         assertEq(uint256(kernel.viewData(_amountSlot(TREASURY_AMOUNT_SLOT, address(assetTwo)))), 337.5e18);
+        assertEq(controller.TOKEN().balanceOf(address(this)), 100e18);
     }
 
-    function testClearAuctionRevertsForInvalidSplit() public {
+    function testSettleAppliesPermittedStateUpdates() public {
         AuctionModule module = _installActiveAuctionModule();
-        controller.setModulePermission(AUCTION_KEYCODE, Controller.clearAuction.selector, true);
-        Controller.AuctionSettlement memory settlement = _auctionSettlement();
-        settlement.assets[0].teamAmount += 1;
+        controller.setStatePermission(AUCTION_KEYCODE, BORROW_STATE_SLOT, true);
+        Controller.Settlement memory settlement =
+            _stateUpdateSettlement(BORROW_STATE_SLOT, Controller.StateOp.Set, bytes32(uint256(123)));
 
-        vm.expectRevert(Controller.Controller__InvalidAuctionSettlement.selector);
-        module.clearAuction(controller, settlement);
+        module.settle(controller, settlement);
+
+        assertEq(kernel.viewData(BORROW_STATE_SLOT), bytes32(uint256(123)));
     }
 
-    function testClearAuctionRevertsForZeroPayer() public {
+    function testSettleRevertsForStateUpdateWithoutPermission() public {
         AuctionModule module = _installActiveAuctionModule();
-        controller.setModulePermission(AUCTION_KEYCODE, Controller.clearAuction.selector, true);
-        Controller.AuctionSettlement memory settlement = _auctionSettlement();
+        Controller.Settlement memory settlement =
+            _stateUpdateSettlement(BORROW_STATE_SLOT, Controller.StateOp.Set, bytes32(uint256(123)));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(Controller.Controller__StatePermissionDenied.selector, BORROW_STATE_SLOT)
+        );
+        module.settle(controller, settlement);
+    }
+
+    function testSettleRevertsWhenStateUpdateLowersRegisteredBacking() public {
+        AuctionModule module = _installActiveAuctionModule();
+        _seedControllerAssets();
+        _storeControllerBucket(BACKING_AMOUNT_SLOT, address(asset), 10e18);
+        bytes32 backingSlot = _amountSlot(BACKING_AMOUNT_SLOT, address(asset));
+        controller.setStatePermission(AUCTION_KEYCODE, backingSlot, true);
+        Controller.Settlement memory settlement =
+            _stateUpdateSettlement(backingSlot, Controller.StateOp.Sub, bytes32(uint256(1e18)));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(Controller.Controller__BackingInvariantBreach.selector, address(asset), 10e18, 9e18)
+        );
+        module.settle(controller, settlement);
+    }
+
+    function testSettleRevertsForOverAllocatedAsset() public {
+        AuctionModule module = _installActiveAuctionModule();
+        controller.setMintPermission(AUCTION_KEYCODE, true);
+        _setMaxSupply(1_000_000e18);
+        Controller.Settlement memory settlement = _auctionSettlement();
+        settlement.credits[1].amount = 700e18;
+
+        vm.expectRevert(abi.encodeWithSelector(Controller.Controller__SettlementOverAllocated.selector, address(asset)));
+        module.settle(controller, settlement);
+    }
+
+    function testSettleRevertsForZeroPayer() public {
+        AuctionModule module = _installActiveAuctionModule();
+        controller.setMintPermission(AUCTION_KEYCODE, true);
+        Controller.Settlement memory settlement = _auctionSettlement();
         settlement.payer = address(0);
 
         vm.expectRevert(Controller.Controller__ZeroAddress.selector);
-        module.clearAuction(controller, settlement);
+        module.settle(controller, settlement);
+    }
+
+    function testSettleWithoutMintsDoesNotChargeProtocolFee() public {
+        AuctionModule module = _installActiveAuctionModule();
+        Controller.Settlement memory settlement = _liquiditySettlement();
+
+        module.settle(controller, settlement);
+
+        assertEq(asset.balanceOf(address(vault)), 100e18);
+        assertEq(asset.balanceOf(controller.PROTOCOL_COLLECTOR()), 0);
+        assertEq(uint256(kernel.viewData(_amountSlot(BACKING_AMOUNT_SLOT, address(asset)))), 70e18);
+        assertEq(uint256(kernel.viewData(_amountSlot(TEAM_AMOUNT_SLOT, address(asset)))), 5e18);
+        assertEq(uint256(kernel.viewData(_amountSlot(TREASURY_AMOUNT_SLOT, address(asset)))), 25e18);
+        assertEq(controller.TOKEN().totalSupply(), 0);
     }
 
     function testVaultConstructorRevertsForZeroController() public {
@@ -525,23 +609,71 @@ contract VaultTest is Test {
         controller.execute(IController.Action.ActivateModule, address(module));
     }
 
-    function _auctionSettlement() internal view returns (Controller.AuctionSettlement memory settlement) {
+    function _auctionSettlement() internal view returns (Controller.Settlement memory settlement) {
         settlement.payer = address(this);
-        settlement.assets = new Controller.AuctionAssetSettlement[](2);
-        settlement.assets[0] = Controller.AuctionAssetSettlement({
-            asset: address(asset),
-            grossAmount: 1_000e18,
-            backingAmount: 300e18,
-            treasuryAmount: 475e18,
-            teamAmount: 200e18
+        settlement.receipts = new Controller.Receipt[](2);
+        settlement.receipts[0] = Controller.Receipt({asset: address(asset), amount: 1_000e18});
+        settlement.receipts[1] = Controller.Receipt({asset: address(assetTwo), amount: 500e18});
+
+        settlement.credits = new Controller.Credit[](4);
+        settlement.credits[0] =
+            Controller.Credit({asset: address(asset), to: IVaultCore.Bucket.Backing, amount: 300e18});
+        settlement.credits[1] = Controller.Credit({asset: address(asset), to: IVaultCore.Bucket.Team, amount: 200e18});
+        settlement.credits[2] =
+            Controller.Credit({asset: address(assetTwo), to: IVaultCore.Bucket.Backing, amount: 100e18});
+        settlement.credits[3] = Controller.Credit({asset: address(assetTwo), to: IVaultCore.Bucket.Team, amount: 50e18});
+
+        settlement.mints = new Controller.Mint[](1);
+        settlement.mints[0] = Controller.Mint({to: address(this), amount: 100e18});
+        settlement.stateUpdates = new Controller.StateUpdate[](0);
+    }
+
+    function _liquiditySettlement() internal view returns (Controller.Settlement memory settlement) {
+        settlement.payer = address(this);
+        settlement.receipts = new Controller.Receipt[](1);
+        settlement.receipts[0] = Controller.Receipt({asset: address(asset), amount: 100e18});
+
+        settlement.credits = new Controller.Credit[](2);
+        settlement.credits[0] = Controller.Credit({asset: address(asset), to: IVaultCore.Bucket.Backing, amount: 70e18});
+        settlement.credits[1] = Controller.Credit({asset: address(asset), to: IVaultCore.Bucket.Team, amount: 5e18});
+
+        settlement.mints = new Controller.Mint[](0);
+        settlement.stateUpdates = new Controller.StateUpdate[](0);
+    }
+
+    function _stateUpdateSettlement(bytes32 namespace, Controller.StateOp op, bytes32 data)
+        internal
+        pure
+        returns (Controller.Settlement memory settlement)
+    {
+        settlement.payer = address(0);
+        settlement.receipts = new Controller.Receipt[](0);
+        settlement.credits = new Controller.Credit[](0);
+        settlement.mints = new Controller.Mint[](0);
+        settlement.stateUpdates = new Controller.StateUpdate[](1);
+        settlement.stateUpdates[0] = Controller.StateUpdate({
+            namespace: namespace, derivation: Controller.SlotDerivation.Direct, key: bytes32(0), op: op, data: data
         });
-        settlement.assets[1] = Controller.AuctionAssetSettlement({
-            asset: address(assetTwo),
-            grossAmount: 500e18,
-            backingAmount: 100e18,
-            treasuryAmount: 337.5e18,
-            teamAmount: 50e18
-        });
+    }
+
+    function _setMaxSupply(uint256 maxSupply) internal {
+        vm.prank(address(controller));
+        kernel.updateState(Slots.MAX_SUPPLY_SLOT, bytes32(maxSupply));
+    }
+
+    function _seedControllerAssets() internal {
+        address[] memory assets_ = new address[](1);
+        assets_[0] = address(asset);
+
+        vm.startPrank(address(controller));
+        kernel.updateState(ASSET_COUNT_SLOT, bytes32(assets_.length));
+        kernel.updateState(ASSET_BASE_SLOT, bytes32(uint256(uint160(assets_[0]))));
+        vm.stopPrank();
+    }
+
+    function _storeControllerBucket(bytes32 namespace, address token, uint256 amount) internal {
+        vm.prank(address(controller));
+        kernel.updateState(_amountSlot(namespace, token), bytes32(amount));
     }
 
     function _protocolCut(uint256 grossAmount) internal pure returns (uint256) {

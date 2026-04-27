@@ -3,18 +3,12 @@ pragma solidity 0.8.34;
 
 import {IKernel} from "./interfaces/IKernel.sol";
 import {IVault} from "./interfaces/IVault.sol";
+import {Slots} from "./libraries/Slots.sol";
 import {IERC20} from "openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 
 contract Vault is IVault {
     using SafeERC20 for IERC20;
-
-    // ---------------------- KERNEL WRITE / READ SLOTS  ---------------------- \\
-    bytes32 internal constant TREASURY_AMOUNT_SLOT = 0x60b5ab302bbeea0c83917cc1819e272c0b2ec70ceb2f138a32d5caae015750f3; //equivilant to keccak256("enten.treasury.amount");
-    bytes32 internal constant BACKING_AMOUNT_SLOT = 0x0024fb7f9ccb99221958049f86297fab788b0f0b640b3f50254c9bd56ccf0930; // equivilant to keccak256("enten.backing.amount");
-    bytes32 internal constant TEAM_AMOUNT_SLOT = 0x1da01d8de7381a167e82accc7aa1ccc9122c1143bd9e81a0e9456adadd05678a; // equivilant to keccak256("enten.team.amount");
-    bytes32 internal constant ASSET_COUNT_SLOT = 0xd635f114cc21f2834e679c2555d4ff475d8d6f01003ca6da1dfee13ecdf62738; // equiviliant to keccak256("enten.backing.assets.length");
-    bytes32 internal constant ASSET_BASE_SLOT = 0x1a27d05721698994f0e5408d30550ae696157097140b4a919a081b62c08e625f; // equivilant to keccak256("enten.backing.assets");
 
     // ---------------------- IMMUTABLES  -------------------------------------- \\
     address public immutable CONTROLLER;
@@ -142,15 +136,15 @@ contract Vault is IVault {
     }
 
     function backingBalances() external view returns (IVault.AssetBalance[] memory) {
-        return _readAssetBalances(BACKING_AMOUNT_SLOT);
+        return _readAssetBalances(Slots.BACKING_AMOUNT_SLOT);
     }
 
     function treasuryBalances() external view returns (IVault.AssetBalance[] memory) {
-        return _readAssetBalances(TREASURY_AMOUNT_SLOT);
+        return _readAssetBalances(Slots.TREASURY_AMOUNT_SLOT);
     }
 
     function teamBalances() external view returns (IVault.AssetBalance[] memory) {
-        return _readAssetBalances(TEAM_AMOUNT_SLOT);
+        return _readAssetBalances(Slots.TEAM_AMOUNT_SLOT);
     }
 
     // ---------------------- INTERNAL FUNCTIONS -------------------------------- \\
@@ -167,9 +161,9 @@ contract Vault is IVault {
     }
 
     function _namespace(IVault.Bucket bucket) internal pure returns (bytes32 namespace) {
-        if (bucket == IVault.Bucket.Backing) return BACKING_AMOUNT_SLOT;
-        if (bucket == IVault.Bucket.Treasury) return TREASURY_AMOUNT_SLOT;
-        if (bucket == IVault.Bucket.Team) return TEAM_AMOUNT_SLOT;
+        if (bucket == IVault.Bucket.Backing) return Slots.BACKING_AMOUNT_SLOT;
+        if (bucket == IVault.Bucket.Treasury) return Slots.TREASURY_AMOUNT_SLOT;
+        if (bucket == IVault.Bucket.Team) return Slots.TEAM_AMOUNT_SLOT;
         revert Vault__InvalidBucket();
     }
 
@@ -183,10 +177,10 @@ contract Vault is IVault {
     }
 
     function _readAssets() internal view returns (address[] memory assets) {
-        uint256 assetCount = uint256(KERNEL.viewData(ASSET_COUNT_SLOT));
+        uint256 assetCount = uint256(KERNEL.viewData(Slots.ASSETS_LENGTH_SLOT));
         if (assetCount == 0) return new address[](0);
 
-        bytes memory raw = KERNEL.viewData(ASSET_BASE_SLOT, assetCount);
+        bytes memory raw = KERNEL.viewData(Slots.ASSETS_BASE_SLOT, assetCount);
 
         assembly ("memory-safe") {
             mstore(raw, assetCount)
@@ -195,11 +189,11 @@ contract Vault is IVault {
     }
 
     function _readAssetBalances(bytes32 namespace) internal view returns (IVault.AssetBalance[] memory values) {
-        uint256 assetCount = uint256(KERNEL.viewData(ASSET_COUNT_SLOT));
+        uint256 assetCount = uint256(KERNEL.viewData(Slots.ASSETS_LENGTH_SLOT));
         values = new IVault.AssetBalance[](assetCount);
         if (assetCount == 0) return values;
 
-        bytes memory rawAssets = KERNEL.viewData(ASSET_BASE_SLOT, assetCount);
+        bytes memory rawAssets = KERNEL.viewData(Slots.ASSETS_BASE_SLOT, assetCount);
         bytes32[] memory slots;
 
         for (uint256 i = 0; i < assetCount;) {

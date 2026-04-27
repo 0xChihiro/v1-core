@@ -1,22 +1,26 @@
-///SPDX-License-Identifier: MIT
 pragma solidity 0.8.34;
 
 import {AccessControl} from "openzeppelin/contracts/access/AccessControl.sol";
-import {EntenToken} from "./EntenToken.sol";
-import {Kernel} from "./Kernel.sol";
-import {Vault} from "./Vault.sol";
-import {IController, IModule, IPolicy, Keycode, Permission} from "./interfaces/IController.sol";
-import {IVault} from "./interfaces/IVault.sol";
-import {Slots} from "./libraries/Slots.sol";
+import {Keycode} from "./src/interfaces/IController.sol";
+import {IKernel} from "./src/interfaces/IKernel.sol";
+import {IVault} from "./src/interfaces/IVault.sol";
+import {Slots} from "./src/libraries/Slots.sol";
 
-contract Controller is IController, AccessControl {
-    bytes32 public constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
+interface IEntenToken {
+    function mint(address to, uint256 amount) external;
+    function burnFrom(address from, uint256 amount) external;
+    function totalSupply() external view returns (uint256);
+}
+
+contract ControllerSettlementSketch is AccessControl {
     uint256 public constant BPS = 10_000;
     uint256 public constant AUCTION_FEE_BPS = 250;
 
-    Kernel public immutable KERNEL;
-    Vault public immutable VAULT;
-    EntenToken public immutable TOKEN;
+    bytes32 public constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
+
+    IKernel public immutable KERNEL;
+    IVault public immutable VAULT;
+    IEntenToken public immutable TOKEN;
     address public immutable PROTOCOL_COLLECTOR;
 
     enum StateOp {
@@ -30,23 +34,6 @@ contract Controller is IController, AccessControl {
         MappingKey,
         Offset
     }
-
-    Keycode[] public allModuleKeycodes;
-    Keycode[] public allPolicyKeycodes;
-
-    mapping(Keycode keycode => address module) public moduleForKeycode;
-    mapping(address module => Keycode keycode) public keycodeForModule;
-    mapping(Keycode keycode => bool active) public activeModules;
-
-    mapping(Keycode keycode => address policy) public policyForKeycode;
-    mapping(address policy => Keycode keycode) public keycodeForPolicy;
-    mapping(Keycode keycode => bool active) public activePolicies;
-
-    mapping(Keycode policy => Keycode[] dependencies) public policyDependencies;
-    mapping(Keycode module => mapping(Keycode policy => mapping(bytes4 selector => bool allowed))) public
-        policyPermissions;
-    mapping(Keycode module => bool allowed) public mintPermissions;
-    mapping(Keycode module => mapping(bytes32 namespace => bool allowed)) public statePermissions;
 
     struct Settlement {
         address payer;
@@ -80,14 +67,12 @@ contract Controller is IController, AccessControl {
         bytes32 data;
     }
 
-    event ActionExecuted(Action indexed action, address indexed target);
-    event ModuleInstalled(Keycode indexed keycode, address indexed module);
-    event ModuleUpgraded(Keycode indexed keycode, address indexed oldModule, address indexed newModule);
-    event ModuleStatusUpdated(Keycode indexed keycode, address indexed module, bool active);
-    event PolicyInstalled(Keycode indexed keycode, address indexed policy);
-    event PolicyUpgraded(Keycode indexed keycode, address indexed oldPolicy, address indexed newPolicy);
-    event PolicyStatusUpdated(Keycode indexed keycode, address indexed policy, bool active);
-    event PermissionUpdated(Keycode indexed module, Keycode indexed policy, bytes4 indexed selector, bool granted);
+    mapping(Keycode module => address moduleAddress) public moduleForKeycode;
+    mapping(address moduleAddress => Keycode module) public keycodeForModule;
+    mapping(Keycode module => bool active) public activeModules;
+    mapping(Keycode module => bool allowed) public mintPermissions;
+    mapping(Keycode module => mapping(bytes32 namespace => bool allowed)) public statePermissions;
+
     event MintPermissionUpdated(Keycode indexed module, bool allowed);
     event StatePermissionUpdated(Keycode indexed module, bytes32 indexed namespace, bool allowed);
     event SettlementCleared(
@@ -101,21 +86,10 @@ contract Controller is IController, AccessControl {
     );
 
     error Controller__ZeroAddress();
-    error Controller__TargetNotAContract(address target);
-    error Controller__InvalidKeycode(Keycode keycode);
-    error Controller__ModuleAlreadyInstalled(Keycode keycode);
-    error Controller__ModuleNotInstalled(Keycode keycode);
-    error Controller__ModuleAlreadyActive(Keycode keycode);
-    error Controller__ModuleNotActive(Keycode keycode);
-    error Controller__InvalidModuleUpgrade(Keycode keycode);
-    error Controller__PolicyAlreadyInstalled(Keycode keycode);
-    error Controller__PolicyNotInstalled(Keycode keycode);
-    error Controller__PolicyAlreadyActive(Keycode keycode);
-    error Controller__PolicyNotActive(Keycode keycode);
-    error Controller__InvalidPolicyUpgrade(Keycode keycode);
-    error Controller__InactivePolicy();
+    error Controller__ModuleNotInstalled(Keycode module);
+    error Controller__ModuleNotActive(Keycode module);
     error Controller__InactiveModule();
-    error Controller__MintPermissionDenied(Keycode keycode);
+    error Controller__MintPermissionDenied(Keycode module);
     error Controller__StatePermissionDenied(bytes32 namespace);
     error Controller__InvalidStateUpdate();
     error Controller__InvalidSettlement();
@@ -126,57 +100,21 @@ contract Controller is IController, AccessControl {
     error Controller__SettlementOverAllocated(address asset);
     error Controller__BackingInvariantBreach(address asset, uint256 beforeAmount, uint256 afterAmount);
 
-    constructor(address admin, address protocolCollector) {
-        if (admin == address(0) || protocolCollector == address(0)) revert Controller__ZeroAddress();
+    constructor(address kernel, address vault, address token, address protocolCollector) {
+        if (kernel == address(0) || vault == address(0) || token == address(0)) revert Controller__ZeroAddress();
 
-        _grantRole(DEFAULT_ADMIN_ROLE, admin);
-        _grantRole(EXECUTOR_ROLE, admin);
-
+        KERNEL = IKernel(kernel);
+        VAULT = IVault(vault);
+        TOKEN = IEntenToken(token);
         PROTOCOL_COLLECTOR = protocolCollector;
-        KERNEL = new Kernel(address(this));
-        VAULT = new Vault(address(this), address(KERNEL));
-        TOKEN = new EntenToken("Enten", "ENTEN", address(this));
-        KERNEL.setAccountingWriter(address(VAULT));
-    }
 
-    modifier onlyActivePolicy() {
-        _onlyActivePolicy();
-        _;
+        _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
+        _grantRole(EXECUTOR_ROLE, msg.sender);
     }
 
     modifier onlyActiveModule() {
         _onlyActiveModule();
         _;
-    }
-
-    function execute(Action action, address target) external onlyRole(EXECUTOR_ROLE) {
-        if (action == Action.InstallModule) {
-            _installModule(target);
-        } else if (action == Action.UpgradeModule) {
-            _upgradeModule(target);
-        } else if (action == Action.ActivateModule) {
-            _activateModule(target);
-        } else if (action == Action.InstallPolicy) {
-            _installPolicy(target);
-        } else if (action == Action.UpgradePolicy) {
-            _upgradePolicy(target);
-        } else if (action == Action.ActivatePolicy) {
-            _activatePolicy(target);
-        }
-
-        emit ActionExecuted(action, target);
-    }
-
-    function moduleKeycodeAt(uint256 index) external view returns (Keycode) {
-        return allModuleKeycodes[index];
-    }
-
-    function policyKeycodeAt(uint256 index) external view returns (Keycode) {
-        return allPolicyKeycodes[index];
-    }
-
-    function policyDependencyAt(Keycode policy, uint256 index) external view returns (Keycode) {
-        return policyDependencies[policy][index];
     }
 
     function setMintPermission(Keycode module, bool allowed) external onlyRole(EXECUTOR_ROLE) {
@@ -210,7 +148,7 @@ contract Controller is IController, AccessControl {
         _validateStateUpdates(moduleKeycode, settlement.stateUpdates);
         _validatePerAssetAllocation(settlement, feeBps);
 
-        address[] memory backingAssets = _collectBackingInvariantAssets(settlement.credits);
+        address[] memory backingAssets = _collectBackingCreditAssets(settlement.credits);
         uint256[] memory backingBefore = _readBackingAmounts(backingAssets);
         uint256 supplyBefore = TOKEN.totalSupply();
 
@@ -252,13 +190,23 @@ contract Controller is IController, AccessControl {
         );
     }
 
+    function _onlyActiveModule() internal view {
+        Keycode moduleKeycode = keycodeForModule[msg.sender];
+        if (Keycode.unwrap(moduleKeycode) == bytes5(0) || !activeModules[moduleKeycode]) {
+            revert Controller__InactiveModule();
+        }
+    }
+
     function _validateSettlementShape(Settlement calldata settlement) internal pure {
         bool hasReceipts = settlement.receipts.length != 0;
         bool hasCredits = settlement.credits.length != 0;
         bool hasMints = settlement.mints.length != 0;
         bool hasStateUpdates = settlement.stateUpdates.length != 0;
 
-        if (!hasReceipts && !hasCredits && !hasMints && !hasStateUpdates) revert Controller__InvalidSettlement();
+        if (!hasReceipts && !hasCredits && !hasMints && !hasStateUpdates) {
+            revert Controller__InvalidSettlement();
+        }
+
         if (hasReceipts && settlement.payer == address(0)) revert Controller__ZeroAddress();
         if (!hasReceipts && (hasCredits || hasMints)) revert Controller__InvalidSettlement();
     }
@@ -335,6 +283,7 @@ contract Controller is IController, AccessControl {
     function _validatePerAssetAllocation(Settlement calldata settlement, uint256 feeBps) internal pure {
         for (uint256 i; i < settlement.receipts.length;) {
             Receipt calldata receipt = settlement.receipts[i];
+
             uint256 protocolFee = _mulDivUp(receipt.amount, feeBps, BPS);
             uint256 credited = _sumCredits(settlement.credits, receipt.asset);
 
@@ -348,15 +297,17 @@ contract Controller is IController, AccessControl {
         }
     }
 
-    function _buildReceiveCalls(address payer, Receipt[] calldata receipts)
-        internal
-        pure
-        returns (IVault.ReceiveCall[] memory calls)
-    {
+    function _buildReceiveCalls(
+        address payer,
+        Receipt[] calldata receipts
+    ) internal pure returns (IVault.ReceiveCall[] memory calls) {
         calls = new IVault.ReceiveCall[](receipts.length);
         for (uint256 i; i < receipts.length;) {
             calls[i] = IVault.ReceiveCall({
-                from: payer, asset: receipts[i].asset, amount: receipts[i].amount, bucket: IVault.Bucket.Treasury
+                from: payer,
+                asset: receipts[i].asset,
+                amount: receipts[i].amount,
+                bucket: IVault.Bucket.Treasury
             });
             unchecked {
                 ++i;
@@ -364,17 +315,20 @@ contract Controller is IController, AccessControl {
         }
     }
 
-    function _buildProtocolFeeCalls(Receipt[] calldata receipts, uint256 feeBps)
-        internal
-        view
-        returns (IVault.TreasuryCall[] memory calls)
-    {
+    function _buildProtocolFeeCalls(
+        Receipt[] calldata receipts,
+        uint256 feeBps
+    ) internal view returns (IVault.TreasuryCall[] memory calls) {
         if (feeBps == 0) return new IVault.TreasuryCall[](0);
 
         calls = new IVault.TreasuryCall[](receipts.length);
         for (uint256 i; i < receipts.length;) {
             uint256 protocolFee = _mulDivUp(receipts[i].amount, feeBps, BPS);
-            calls[i] = IVault.TreasuryCall({asset: receipts[i].asset, to: PROTOCOL_COLLECTOR, amount: protocolFee});
+            calls[i] = IVault.TreasuryCall({
+                asset: receipts[i].asset,
+                to: PROTOCOL_COLLECTOR,
+                amount: protocolFee
+            });
             unchecked {
                 ++i;
             }
@@ -385,7 +339,10 @@ contract Controller is IController, AccessControl {
         calls = new IVault.CreditCall[](credits.length);
         for (uint256 i; i < credits.length;) {
             calls[i] = IVault.CreditCall({
-                from: IVault.Bucket.Treasury, to: credits[i].to, asset: credits[i].asset, amount: credits[i].amount
+                from: IVault.Bucket.Treasury,
+                to: credits[i].to,
+                asset: credits[i].asset,
+                amount: credits[i].amount
             });
             unchecked {
                 ++i;
@@ -447,9 +404,8 @@ contract Controller is IController, AccessControl {
         }
     }
 
-    function _collectBackingInvariantAssets(Credit[] calldata credits) internal view returns (address[] memory assets) {
-        address[] memory registeredAssets = _readRegisteredAssets();
-        uint256 count = registeredAssets.length;
+    function _collectBackingCreditAssets(Credit[] calldata credits) internal pure returns (address[] memory assets) {
+        uint256 count;
         for (uint256 i; i < credits.length;) {
             if (credits[i].to == IVault.Bucket.Backing) ++count;
             unchecked {
@@ -459,10 +415,9 @@ contract Controller is IController, AccessControl {
 
         assets = new address[](count);
         uint256 cursor;
-        for (uint256 i; i < registeredAssets.length;) {
-            address asset = registeredAssets[i];
-            if (asset != address(0) && !_containsAsset(assets, cursor, asset)) {
-                assets[cursor] = asset;
+        for (uint256 i; i < credits.length;) {
+            if (credits[i].to == IVault.Bucket.Backing) {
+                assets[cursor] = credits[i].asset;
                 unchecked {
                     ++cursor;
                 }
@@ -471,47 +426,6 @@ contract Controller is IController, AccessControl {
                 ++i;
             }
         }
-
-        for (uint256 i; i < credits.length;) {
-            if (credits[i].to == IVault.Bucket.Backing) {
-                address asset = credits[i].asset;
-                if (!_containsAsset(assets, cursor, asset)) {
-                    assets[cursor] = asset;
-                    unchecked {
-                        ++cursor;
-                    }
-                }
-            }
-            unchecked {
-                ++i;
-            }
-        }
-
-        assembly ("memory-safe") {
-            mstore(assets, cursor)
-        }
-    }
-
-    function _readRegisteredAssets() internal view returns (address[] memory assets) {
-        uint256 assetCount = uint256(KERNEL.viewData(Slots.ASSETS_LENGTH_SLOT));
-        if (assetCount == 0) return new address[](0);
-
-        bytes memory raw = KERNEL.viewData(Slots.ASSETS_BASE_SLOT, assetCount);
-
-        assembly ("memory-safe") {
-            mstore(raw, assetCount)
-            assets := raw
-        }
-    }
-
-    function _containsAsset(address[] memory assets, uint256 length, address asset) internal pure returns (bool) {
-        for (uint256 i; i < length;) {
-            if (assets[i] == asset) return true;
-            unchecked {
-                ++i;
-            }
-        }
-        return false;
     }
 
     function _readBackingAmounts(address[] memory assets) internal view returns (uint256[] memory amounts) {
@@ -596,178 +510,13 @@ contract Controller is IController, AccessControl {
     }
 
     function _isProtectedAccountingNamespace(bytes32 namespace) internal pure returns (bool) {
-        return namespace == Slots.BACKING_AMOUNT_SLOT || namespace == Slots.TREASURY_AMOUNT_SLOT
+        return namespace == Slots.BACKING_AMOUNT_SLOT
+            || namespace == Slots.TREASURY_AMOUNT_SLOT
             || namespace == Slots.TEAM_AMOUNT_SLOT;
     }
 
     function _isValidStateOp(StateOp op) internal pure returns (bool) {
         return op == StateOp.Set || op == StateOp.Add || op == StateOp.Sub;
-    }
-
-    function _installModule(address target) internal {
-        _ensureContract(target);
-
-        Keycode keycode = IModule(target).keycode();
-        _ensureValidKeycode(keycode);
-
-        if (moduleForKeycode[keycode] != address(0)) revert Controller__ModuleAlreadyInstalled(keycode);
-
-        moduleForKeycode[keycode] = target;
-        keycodeForModule[target] = keycode;
-        allModuleKeycodes.push(keycode);
-
-        IModule(target).init();
-
-        emit ModuleInstalled(keycode, target);
-    }
-
-    function _upgradeModule(address target) internal {
-        _ensureContract(target);
-
-        Keycode keycode = IModule(target).keycode();
-        _ensureValidKeycode(keycode);
-
-        address oldModule = moduleForKeycode[keycode];
-        if (oldModule == address(0) || oldModule == target) revert Controller__InvalidModuleUpgrade(keycode);
-
-        keycodeForModule[oldModule] = Keycode.wrap(bytes5(0));
-        moduleForKeycode[keycode] = target;
-        keycodeForModule[target] = keycode;
-
-        IModule(target).init();
-
-        emit ModuleUpgraded(keycode, oldModule, target);
-    }
-
-    function _activateModule(address target) internal {
-        Keycode keycode = keycodeForModule[target];
-        if (_isEmptyKeycode(keycode)) revert Controller__ModuleNotInstalled(keycode);
-        if (activeModules[keycode]) revert Controller__ModuleAlreadyActive(keycode);
-
-        activeModules[keycode] = true;
-
-        emit ModuleStatusUpdated(keycode, target, true);
-    }
-
-    function _installPolicy(address target) internal {
-        _ensureContract(target);
-
-        Keycode keycode = IPolicy(target).keycode();
-        _ensureValidKeycode(keycode);
-
-        if (policyForKeycode[keycode] != address(0)) revert Controller__PolicyAlreadyInstalled(keycode);
-
-        policyForKeycode[keycode] = target;
-        keycodeForPolicy[target] = keycode;
-        allPolicyKeycodes.push(keycode);
-
-        emit PolicyInstalled(keycode, target);
-    }
-
-    function _upgradePolicy(address target) internal {
-        _ensureContract(target);
-
-        Keycode keycode = IPolicy(target).keycode();
-        _ensureValidKeycode(keycode);
-
-        address oldPolicy = policyForKeycode[keycode];
-        if (oldPolicy == address(0) || oldPolicy == target) revert Controller__InvalidPolicyUpgrade(keycode);
-
-        bool wasActive = activePolicies[keycode];
-        if (wasActive) _deactivatePolicy(oldPolicy);
-
-        keycodeForPolicy[oldPolicy] = Keycode.wrap(bytes5(0));
-        policyForKeycode[keycode] = target;
-        keycodeForPolicy[target] = keycode;
-
-        if (wasActive) _activatePolicy(target);
-
-        emit PolicyUpgraded(keycode, oldPolicy, target);
-    }
-
-    function _activatePolicy(address target) internal {
-        Keycode policyKeycode = keycodeForPolicy[target];
-        if (_isEmptyKeycode(policyKeycode)) revert Controller__PolicyNotInstalled(policyKeycode);
-        if (activePolicies[policyKeycode]) revert Controller__PolicyAlreadyActive(policyKeycode);
-
-        delete policyDependencies[policyKeycode];
-        Keycode[] memory dependencies = IPolicy(target).configureDependencies();
-        for (uint256 i; i < dependencies.length;) {
-            Keycode dependency = dependencies[i];
-            if (moduleForKeycode[dependency] == address(0)) revert Controller__ModuleNotInstalled(dependency);
-            if (!activeModules[dependency]) revert Controller__ModuleNotActive(dependency);
-            policyDependencies[policyKeycode].push(dependency);
-            unchecked {
-                ++i;
-            }
-        }
-
-        Permission[] memory requests = IPolicy(target).requestPermissions();
-        _setPolicyPermissions(policyKeycode, requests, true);
-        activePolicies[policyKeycode] = true;
-
-        emit PolicyStatusUpdated(policyKeycode, target, true);
-    }
-
-    function _deactivatePolicy(address target) internal {
-        Keycode policyKeycode = keycodeForPolicy[target];
-        if (_isEmptyKeycode(policyKeycode)) revert Controller__PolicyNotInstalled(policyKeycode);
-        if (!activePolicies[policyKeycode]) revert Controller__PolicyNotActive(policyKeycode);
-
-        Permission[] memory requests = IPolicy(target).requestPermissions();
-        _setPolicyPermissions(policyKeycode, requests, false);
-
-        delete policyDependencies[policyKeycode];
-        activePolicies[policyKeycode] = false;
-
-        emit PolicyStatusUpdated(policyKeycode, target, false);
-    }
-
-    function _setPolicyPermissions(Keycode policyKeycode, Permission[] memory requests, bool granted) internal {
-        for (uint256 i; i < requests.length;) {
-            Permission memory request = requests[i];
-            if (moduleForKeycode[request.keycode] == address(0)) {
-                revert Controller__ModuleNotInstalled(request.keycode);
-            }
-            if (!activeModules[request.keycode]) revert Controller__ModuleNotActive(request.keycode);
-
-            policyPermissions[request.keycode][policyKeycode][request.selector] = granted;
-
-            emit PermissionUpdated(request.keycode, policyKeycode, request.selector, granted);
-
-            unchecked {
-                ++i;
-            }
-        }
-    }
-
-    function _onlyActivePolicy() internal view {
-        Keycode keycode = keycodeForPolicy[msg.sender];
-        if (_isEmptyKeycode(keycode) || !activePolicies[keycode]) revert Controller__InactivePolicy();
-    }
-
-    function _onlyActiveModule() internal view {
-        Keycode keycode = keycodeForModule[msg.sender];
-        if (_isEmptyKeycode(keycode) || !activeModules[keycode]) revert Controller__InactiveModule();
-    }
-
-    function _ensureContract(address target) internal view {
-        if (target.code.length == 0) revert Controller__TargetNotAContract(target);
-    }
-
-    function _ensureValidKeycode(Keycode keycode) internal pure {
-        bytes5 raw = Keycode.unwrap(keycode);
-        for (uint256 i; i < 5;) {
-            bytes1 char = raw[i];
-            if (char < 0x41 || char > 0x5A) revert Controller__InvalidKeycode(keycode);
-            unchecked {
-                ++i;
-            }
-        }
-    }
-
-    function _isEmptyKeycode(Keycode keycode) internal pure returns (bool) {
-        return Keycode.unwrap(keycode) == bytes5(0);
     }
 
     function _mulDivUp(uint256 x, uint256 y, uint256 denominator) internal pure returns (uint256) {
