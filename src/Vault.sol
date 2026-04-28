@@ -18,6 +18,7 @@ contract Vault is IVault {
     event SurplusSynced(address indexed asset, Bucket indexed bucket, uint256 amount);
 
     // ---------------------- ERRORS -------------------------------------------- \\
+    error Vault__BackingCallInvalid();
     error Vault__CannotLowerBacking();
     error Vault__InvalidBucket();
     error Vault__MisconfiguredSetup();
@@ -40,8 +41,8 @@ contract Vault is IVault {
     }
 
     function transferTreasuryAsset(IVault.TreasuryCall calldata call) external onlyController {
-        IERC20(call.asset).safeTransfer(call.to, call.amount);
         KERNEL.sub(_treasuryAmountSlot(call.asset), bytes32(call.amount));
+        IERC20(call.asset).safeTransfer(call.to, call.amount);
     }
 
     function transferTreasuryAssets(IVault.TreasuryCall[] calldata calls) external onlyController {
@@ -64,8 +65,8 @@ contract Vault is IVault {
     }
 
     function transferTeamAsset(TeamCall calldata call) external onlyController {
-        IERC20(call.asset).safeTransfer(call.to, call.amount);
         KERNEL.sub(_teamAmountSlot(call.asset), bytes32(call.amount));
+        IERC20(call.asset).safeTransfer(call.to, call.amount);
     }
 
     function transferTeamAssets(TeamCall[] calldata calls) external onlyController {
@@ -77,9 +78,50 @@ contract Vault is IVault {
         KERNEL.sub(subCalls);
     }
 
-    // Transfers for borrows
-    // function transferBackingAsset() external onlyController {}
-    // function transferBackingAssets() external onlyController {}
+    function transferBackingAsset(BackingCall calldata call) external onlyController {
+        if (call.callType == BackingType.Redeem) {
+            bytes32 slot = _amountSlot(Bucket.Backing, call.asset);
+            KERNEL.sub(slot, bytes32(call.amount));
+            IERC20(call.asset).safeTransfer(call.to, call.amount);
+        } else if (call.callType == BackingType.Borrow) {
+            bytes32 subSlot = _amountSlot(Bucket.Backing, call.asset);
+            bytes32 addSlot = _slot(Slots.ASSET_TOTAL_BORROWED_BASE_SLOT, call.asset);
+            KERNEL.sub(subSlot, bytes32(call.amount));
+            KERNEL.add(addSlot, bytes32(call.amount));
+            IERC20(call.asset).safeTransfer(call.to, call.amount);
+        } else {
+            revert Vault__BackingCallInvalid();
+        }
+    }
+
+    function transferBackingAssets(BackingCall[] calldata calls) external onlyController {
+        IKernel.KernelCall[] memory subCalls = new IKernel.KernelCall[](calls.length);
+        IKernel.KernelCall[] memory addCalls = new IKernel.KernelCall[](calls.length);
+        for (uint256 i = 0; i < calls.length;) {
+            if (calls[i].callType == BackingType.Redeem) {
+                bytes32 slot = _amountSlot(Bucket.Backing, calls[i].asset);
+                subCalls[i] = IKernel.KernelCall({slot: slot, data: bytes32(calls[i].amount)});
+            } else if (calls[i].callType == BackingType.Borrow) {
+                bytes32 borrowSlot = _slot(Slots.ASSET_TOTAL_BORROWED_BASE_SLOT, calls[i].asset);
+                bytes32 backingSlot = _amountSlot(Bucket.Backing, calls[i].asset);
+                addCalls[i] = IKernel.KernelCall({slot: borrowSlot, data: bytes32(calls[i].amount)});
+                subCalls[i] = IKernel.KernelCall({slot: backingSlot, data: bytes32(calls[i].amount)});
+            } else {
+                revert Vault__BackingCallInvalid();
+            }
+            unchecked {
+                i++;
+            }
+        }
+        KERNEL.sub(subCalls);
+        KERNEL.add(addCalls);
+        for (uint256 i = 0; i < calls.length;) {
+            IERC20(calls[i].asset).safeTransfer(calls[i].to, calls[i].amount);
+            unchecked {
+                i++;
+            }
+        }
+    }
 
     function receiveAsset(IVault.ReceiveCall calldata call) external onlyController {
         IERC20(call.asset).safeTransferFrom(call.from, address(this), call.amount);
@@ -169,6 +211,14 @@ contract Vault is IVault {
 
     function _amountSlot(IVault.Bucket bucket, address asset) internal pure returns (bytes32 slot) {
         bytes32 namespace = _namespace(bucket);
+        assembly ("memory-safe") {
+            mstore(0x00, namespace)
+            mstore(0x20, and(asset, 0xffffffffffffffffffffffffffffffffffffffff))
+            slot := keccak256(0x00, 0x40)
+        }
+    }
+
+    function _slot(bytes32 namespace, address asset) internal pure returns (bytes32 slot) {
         assembly ("memory-safe") {
             mstore(0x00, namespace)
             mstore(0x20, and(asset, 0xffffffffffffffffffffffffffffffffffffffff))

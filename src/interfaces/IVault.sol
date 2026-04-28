@@ -8,6 +8,18 @@ interface IVault {
         Team
     }
 
+    enum BackingType {
+        Redeem,
+        Borrow
+    }
+
+    struct BackingCall {
+        BackingType callType;
+        address asset;
+        address to;
+        uint256 amount;
+    }
+
     struct TreasuryCall {
         address asset;
         address to;
