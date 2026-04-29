@@ -2,46 +2,27 @@
 pragma solidity 0.8.34;
 
 interface IVault {
+    enum TransferType {
+        Receive,
+        Send
+    }
+
     enum Bucket {
-        Backing,
-        Treasury,
-        Team
-    }
-
-    enum BackingType {
+        Borrow,
         Redeem,
-        Borrow
+        Treasury,
+        Team,
+        Collateral,
+        None
     }
 
-    struct BackingCall {
-        BackingType callType;
+    struct TransferCall {
+        TransferType callType;
+        Bucket toBucket;
+        Bucket fromBucket;
         address asset;
-        address to;
+        address user;
         uint256 amount;
-    }
-
-    struct TreasuryCall {
-        address asset;
-        address to;
-        uint256 amount;
-    }
-
-    struct RedeemCall {
-        address asset;
-        uint256 amount;
-    }
-
-    struct TeamCall {
-        address to;
-        address asset;
-        uint256 amount;
-    }
-
-    struct ReceiveCall {
-        address from;
-        address asset;
-        uint256 amount;
-        Bucket bucket;
     }
 
     struct CreditCall {
@@ -55,16 +36,11 @@ interface IVault {
         address asset;
         uint256 amount;
     }
-    function transferTreasuryAsset(TreasuryCall calldata) external;
-    function transferTreasuryAssets(TreasuryCall[] calldata) external;
-    function transferRedeem(address, RedeemCall[] calldata) external;
-    function transferTeamAsset(TeamCall calldata) external;
-    function transferTeamAssets(TeamCall[] calldata) external;
+
+    function handleAccounting(TransferCall[] memory) external;
     function credit(address, uint256, Bucket, Bucket) external;
     function credits(CreditCall[] calldata) external;
     function syncSurplus(address, Bucket) external;
-    function receiveAsset(ReceiveCall calldata) external;
-    function receiveAssets(ReceiveCall[] calldata) external;
     function backingBalances() external view returns (AssetBalance[] memory);
     function treasuryBalances() external view returns (AssetBalance[] memory);
     function teamBalances() external view returns (AssetBalance[] memory);

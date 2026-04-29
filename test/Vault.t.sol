@@ -26,12 +26,12 @@ contract VaultHarness is Vault {
         return _accountedBalance(asset);
     }
 
-    function exposedNamespaceUnchecked(uint256 raw) external pure returns (bytes32) {
+    function exposedBucketSlotUnchecked(uint256 raw, address token) external pure returns (bytes32) {
         IVaultCore.Bucket bucket;
         assembly ("memory-safe") {
             bucket := raw
         }
-        return _namespace(bucket);
+        return _bucketSlot(bucket, token);
     }
 
     function exposedReadAssets() external view returns (address[] memory) {
@@ -160,8 +160,8 @@ contract VaultTest is Test {
 
     function setUp() public {
         controller = new Controller(address(this), PROTOCOL_COLLECTOR);
-        kernel = controller.KERNEL();
-        vault = controller.VAULT();
+        kernel = Kernel(address(controller.KERNEL()));
+        vault = Vault(address(controller.VAULT()));
 
         asset = new ERC20Mock("Mock Asset", "MOCK");
         assetTwo = new ERC20Mock("Second Asset", "MOCK2");
@@ -497,32 +497,118 @@ contract VaultTest is Test {
     }
 
     function testVaultTransferRevertsWhenCallerIsNotController() public {
+        IVaultCore.TransferCall[] memory calls = new IVaultCore.TransferCall[](1);
+
         vm.expectRevert(Vault.Vault__OnlyController.selector);
-        vault.transferTreasuryAsset(IVaultCore.TreasuryCall({asset: address(asset), to: RECIPIENT, amount: 1e18}));
+        vault.handleAccounting(calls);
     }
 
-    function testVaultTransferTreasuryAssetAllowsController() public {
+    function testVaultHandleAccountingSendsTreasuryAsset() public {
         asset.mint(address(vault), 100e18);
         _storeBucket(kernel, TREASURY_AMOUNT_SLOT, address(asset), 100e18);
+        bytes32 slotZeroBefore = vm.load(address(kernel), bytes32(0));
+
+        IVaultCore.TransferCall[] memory calls = new IVaultCore.TransferCall[](1);
+        calls[0] = IVaultCore.TransferCall({
+            callType: IVaultCore.TransferType.Send,
+            toBucket: IVaultCore.Bucket.None,
+            fromBucket: IVaultCore.Bucket.Treasury,
+            asset: address(asset),
+            user: RECIPIENT,
+            amount: 40e18
+        });
 
         vm.prank(address(controller));
-        vault.transferTreasuryAsset(IVaultCore.TreasuryCall({asset: address(asset), to: RECIPIENT, amount: 40e18}));
+        vault.handleAccounting(calls);
 
         assertEq(asset.balanceOf(RECIPIENT), 40e18);
         assertEq(asset.balanceOf(address(vault)), 60e18);
         assertEq(uint256(kernel.viewData(_amountSlot(TREASURY_AMOUNT_SLOT, address(asset)))), 60e18);
+        assertEq(vm.load(address(kernel), bytes32(0)), slotZeroBefore);
     }
 
-    function testVaultReceiveAssetAllowsController() public {
+    function testVaultHandleAccountingReceivesAsset() public {
+        bytes32 slotZeroBefore = vm.load(address(kernel), bytes32(0));
+
+        IVaultCore.TransferCall[] memory calls = new IVaultCore.TransferCall[](1);
+        calls[0] = IVaultCore.TransferCall({
+            callType: IVaultCore.TransferType.Receive,
+            toBucket: IVaultCore.Bucket.Treasury,
+            fromBucket: IVaultCore.Bucket.None,
+            asset: address(asset),
+            user: address(this),
+            amount: 50e18
+        });
+
         vm.prank(address(controller));
-        vault.receiveAsset(
-            IVaultCore.ReceiveCall({
-                from: address(this), asset: address(asset), amount: 50e18, bucket: IVaultCore.Bucket.Treasury
-            })
-        );
+        vault.handleAccounting(calls);
 
         assertEq(asset.balanceOf(address(vault)), 50e18);
         assertEq(uint256(kernel.viewData(_amountSlot(TREASURY_AMOUNT_SLOT, address(asset)))), 50e18);
+        assertEq(vm.load(address(kernel), bytes32(0)), slotZeroBefore);
+    }
+
+    function testVaultHandleAccountingBorrowAndRepayDoesNotMutateSlotZero() public {
+        asset.mint(address(vault), 100e18);
+        _storeBucket(kernel, BACKING_AMOUNT_SLOT, address(asset), 100e18);
+        bytes32 borrowSlot = _amountSlot(Slots.ASSET_TOTAL_BORROWED_BASE_SLOT, address(asset));
+        bytes32 slotZeroBefore = vm.load(address(kernel), bytes32(0));
+
+        IVaultCore.TransferCall[] memory borrowCalls = new IVaultCore.TransferCall[](1);
+        borrowCalls[0] = IVaultCore.TransferCall({
+            callType: IVaultCore.TransferType.Send,
+            toBucket: IVaultCore.Bucket.Borrow,
+            fromBucket: IVaultCore.Bucket.Redeem,
+            asset: address(asset),
+            user: RECIPIENT,
+            amount: 40e18
+        });
+
+        vm.prank(address(controller));
+        vault.handleAccounting(borrowCalls);
+
+        assertEq(asset.balanceOf(RECIPIENT), 40e18);
+        assertEq(uint256(kernel.viewData(_amountSlot(BACKING_AMOUNT_SLOT, address(asset)))), 60e18);
+        assertEq(uint256(kernel.viewData(borrowSlot)), 40e18);
+        assertEq(vm.load(address(kernel), bytes32(0)), slotZeroBefore);
+
+        vm.prank(RECIPIENT);
+        asset.approve(address(vault), 40e18);
+
+        IVaultCore.TransferCall[] memory repayCalls = new IVaultCore.TransferCall[](1);
+        repayCalls[0] = IVaultCore.TransferCall({
+            callType: IVaultCore.TransferType.Receive,
+            toBucket: IVaultCore.Bucket.Redeem,
+            fromBucket: IVaultCore.Bucket.Borrow,
+            asset: address(asset),
+            user: RECIPIENT,
+            amount: 40e18
+        });
+
+        vm.prank(address(controller));
+        vault.handleAccounting(repayCalls);
+
+        assertEq(asset.balanceOf(address(vault)), 100e18);
+        assertEq(uint256(kernel.viewData(_amountSlot(BACKING_AMOUNT_SLOT, address(asset)))), 100e18);
+        assertEq(uint256(kernel.viewData(borrowSlot)), 0);
+        assertEq(vm.load(address(kernel), bytes32(0)), slotZeroBefore);
+    }
+
+    function testVaultCreditsDoesNotMutateSlotZero() public {
+        _storeBucket(kernel, TREASURY_AMOUNT_SLOT, address(asset), 100e18);
+        bytes32 slotZeroBefore = vm.load(address(kernel), bytes32(0));
+
+        IVaultCore.CreditCall[] memory calls = new IVaultCore.CreditCall[](1);
+        calls[0] = IVaultCore.CreditCall({
+            from: IVaultCore.Bucket.Treasury, to: IVaultCore.Bucket.Team, asset: address(asset), amount: 40e18
+        });
+
+        vm.prank(address(controller));
+        vault.credits(calls);
+
+        assertEq(uint256(kernel.viewData(_amountSlot(TREASURY_AMOUNT_SLOT, address(asset)))), 60e18);
+        assertEq(uint256(kernel.viewData(_amountSlot(TEAM_AMOUNT_SLOT, address(asset)))), 40e18);
+        assertEq(vm.load(address(kernel), bytes32(0)), slotZeroBefore);
     }
 
     function testBackingBalancesReturnsEmptyWhenNoAssetsAreSeeded() public {
@@ -591,11 +677,11 @@ contract VaultTest is Test {
         assertEq(readVault.exposedAccountedBalance(address(asset)), 9e18);
     }
 
-    function testExposedNamespaceUncheckedPanicsForInvalidBucket() public {
+    function testExposedBucketSlotUncheckedRevertsForInvalidBucket() public {
         (, VaultHarness readVault) = _deployReadHarness();
 
         vm.expectRevert(stdError.enumConversionError);
-        readVault.exposedNamespaceUnchecked(3);
+        readVault.exposedBucketSlotUnchecked(6, address(asset));
     }
 
     function _deployReadHarness() internal returns (Kernel readKernel, VaultHarness readVault) {
@@ -616,11 +702,10 @@ contract VaultTest is Test {
         settlement.receipts[1] = Controller.Receipt({asset: address(assetTwo), amount: 500e18});
 
         settlement.credits = new Controller.Credit[](4);
-        settlement.credits[0] =
-            Controller.Credit({asset: address(asset), to: IVaultCore.Bucket.Backing, amount: 300e18});
+        settlement.credits[0] = Controller.Credit({asset: address(asset), to: IVaultCore.Bucket.Redeem, amount: 300e18});
         settlement.credits[1] = Controller.Credit({asset: address(asset), to: IVaultCore.Bucket.Team, amount: 200e18});
         settlement.credits[2] =
-            Controller.Credit({asset: address(assetTwo), to: IVaultCore.Bucket.Backing, amount: 100e18});
+            Controller.Credit({asset: address(assetTwo), to: IVaultCore.Bucket.Redeem, amount: 100e18});
         settlement.credits[3] = Controller.Credit({asset: address(assetTwo), to: IVaultCore.Bucket.Team, amount: 50e18});
 
         settlement.mints = new Controller.Mint[](1);
@@ -634,7 +719,7 @@ contract VaultTest is Test {
         settlement.receipts[0] = Controller.Receipt({asset: address(asset), amount: 100e18});
 
         settlement.credits = new Controller.Credit[](2);
-        settlement.credits[0] = Controller.Credit({asset: address(asset), to: IVaultCore.Bucket.Backing, amount: 70e18});
+        settlement.credits[0] = Controller.Credit({asset: address(asset), to: IVaultCore.Bucket.Redeem, amount: 70e18});
         settlement.credits[1] = Controller.Credit({asset: address(asset), to: IVaultCore.Bucket.Team, amount: 5e18});
 
         settlement.mints = new Controller.Mint[](0);

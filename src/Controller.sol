@@ -7,6 +7,7 @@ import {Kernel} from "./Kernel.sol";
 import {Vault} from "./Vault.sol";
 import {IController, IModule, IPolicy, Keycode, Permission} from "./interfaces/IController.sol";
 import {IVault} from "./interfaces/IVault.sol";
+import {IKernel} from "./interfaces/IKernel.sol";
 import {Slots} from "./libraries/Slots.sol";
 
 contract Controller is IController, AccessControl {
@@ -14,8 +15,8 @@ contract Controller is IController, AccessControl {
     uint256 public constant BPS = 10_000;
     uint256 public constant AUCTION_FEE_BPS = 250;
 
-    Kernel public immutable KERNEL;
-    Vault public immutable VAULT;
+    IKernel public immutable KERNEL;
+    IVault public immutable VAULT;
     EntenToken public immutable TOKEN;
     address public immutable PROTOCOL_COLLECTOR;
 
@@ -133,8 +134,8 @@ contract Controller is IController, AccessControl {
         _grantRole(EXECUTOR_ROLE, admin);
 
         PROTOCOL_COLLECTOR = protocolCollector;
-        KERNEL = new Kernel(address(this));
-        VAULT = new Vault(address(this), address(KERNEL));
+        KERNEL = IKernel(new Kernel(address(this)));
+        VAULT = IVault(new Vault(address(this), address(KERNEL)));
         TOKEN = new EntenToken("Enten", "ENTEN", address(this), address(0), 0, type(uint256).max);
         KERNEL.setAccountingWriter(address(VAULT));
     }
@@ -214,16 +215,11 @@ contract Controller is IController, AccessControl {
         uint256[] memory backingBefore = _readBackingAmounts(backingAssets);
         uint256 supplyBefore = TOKEN.totalSupply();
 
-        IVault.ReceiveCall[] memory receiveCalls = _buildReceiveCalls(settlement.payer, settlement.receipts);
-        IVault.TreasuryCall[] memory protocolCalls = _buildProtocolFeeCalls(settlement.receipts, feeBps);
+        IVault.TransferCall[] memory transferCalls = _buildTransferCalls(settlement.payer, settlement.receipts, feeBps);
         IVault.CreditCall[] memory creditCalls = _buildCreditCalls(settlement.credits);
 
-        if (receiveCalls.length != 0) {
-            VAULT.receiveAssets(receiveCalls);
-        }
-
-        if (protocolCalls.length != 0) {
-            VAULT.transferTreasuryAssets(protocolCalls);
+        if (transferCalls.length != 0) {
+            VAULT.handleAccounting(transferCalls);
         }
 
         if (creditCalls.length != 0) {
@@ -287,7 +283,7 @@ contract Controller is IController, AccessControl {
             Credit calldata credit = settlement.credits[i];
             if (credit.asset == address(0) || credit.amount == 0) revert Controller__InvalidSettlementAsset();
             if (!_hasReceiptForAsset(settlement.receipts, credit.asset)) revert Controller__InvalidSettlement();
-            if (credit.to != IVault.Bucket.Backing && credit.to != IVault.Bucket.Team) {
+            if (credit.to != IVault.Bucket.Redeem && credit.to != IVault.Bucket.Team) {
                 revert Controller__InvalidSettlementBucket();
             }
 
@@ -348,35 +344,45 @@ contract Controller is IController, AccessControl {
         }
     }
 
-    function _buildReceiveCalls(address payer, Receipt[] calldata receipts)
+    function _buildTransferCalls(address payer, Receipt[] calldata receipts, uint256 feeBps)
         internal
-        pure
-        returns (IVault.ReceiveCall[] memory calls)
+        view
+        returns (IVault.TransferCall[] memory calls)
     {
-        calls = new IVault.ReceiveCall[](receipts.length);
+        uint256 protocolCallCount = feeBps == 0 ? 0 : receipts.length;
+        calls = new IVault.TransferCall[](receipts.length + protocolCallCount);
+
+        uint256 cursor;
         for (uint256 i; i < receipts.length;) {
-            calls[i] = IVault.ReceiveCall({
-                from: payer, asset: receipts[i].asset, amount: receipts[i].amount, bucket: IVault.Bucket.Treasury
+            calls[cursor] = IVault.TransferCall({
+                callType: IVault.TransferType.Receive,
+                toBucket: IVault.Bucket.Treasury,
+                fromBucket: IVault.Bucket.None,
+                asset: receipts[i].asset,
+                user: payer,
+                amount: receipts[i].amount
             });
             unchecked {
                 ++i;
+                ++cursor;
             }
         }
-    }
 
-    function _buildProtocolFeeCalls(Receipt[] calldata receipts, uint256 feeBps)
-        internal
-        view
-        returns (IVault.TreasuryCall[] memory calls)
-    {
-        if (feeBps == 0) return new IVault.TreasuryCall[](0);
-
-        calls = new IVault.TreasuryCall[](receipts.length);
-        for (uint256 i; i < receipts.length;) {
-            uint256 protocolFee = _mulDivUp(receipts[i].amount, feeBps, BPS);
-            calls[i] = IVault.TreasuryCall({asset: receipts[i].asset, to: PROTOCOL_COLLECTOR, amount: protocolFee});
-            unchecked {
-                ++i;
+        if (feeBps != 0) {
+            for (uint256 i; i < receipts.length;) {
+                uint256 protocolFee = _mulDivUp(receipts[i].amount, feeBps, BPS);
+                calls[cursor] = IVault.TransferCall({
+                    callType: IVault.TransferType.Send,
+                    toBucket: IVault.Bucket.None,
+                    fromBucket: IVault.Bucket.Treasury,
+                    asset: receipts[i].asset,
+                    user: PROTOCOL_COLLECTOR,
+                    amount: protocolFee
+                });
+                unchecked {
+                    ++i;
+                    ++cursor;
+                }
             }
         }
     }
@@ -451,7 +457,7 @@ contract Controller is IController, AccessControl {
         address[] memory registeredAssets = _readRegisteredAssets();
         uint256 count = registeredAssets.length;
         for (uint256 i; i < credits.length;) {
-            if (credits[i].to == IVault.Bucket.Backing) ++count;
+            if (credits[i].to == IVault.Bucket.Redeem) ++count;
             unchecked {
                 ++i;
             }
@@ -473,7 +479,7 @@ contract Controller is IController, AccessControl {
         }
 
         for (uint256 i; i < credits.length;) {
-            if (credits[i].to == IVault.Bucket.Backing) {
+            if (credits[i].to == IVault.Bucket.Redeem) {
                 address asset = credits[i].asset;
                 if (!_containsAsset(assets, cursor, asset)) {
                     assets[cursor] = asset;
@@ -517,7 +523,7 @@ contract Controller is IController, AccessControl {
     function _readBackingAmounts(address[] memory assets) internal view returns (uint256[] memory amounts) {
         amounts = new uint256[](assets.length);
         for (uint256 i; i < assets.length;) {
-            amounts[i] = uint256(KERNEL.viewData(_amountSlot(IVault.Bucket.Backing, assets[i])));
+            amounts[i] = uint256(KERNEL.viewData(_amountSlot(IVault.Bucket.Redeem, assets[i])));
             unchecked {
                 ++i;
             }
@@ -526,7 +532,7 @@ contract Controller is IController, AccessControl {
 
     function _assertBackingNonDecreasing(address[] memory assets, uint256[] memory beforeAmounts) internal view {
         for (uint256 i; i < assets.length;) {
-            uint256 afterAmount = uint256(KERNEL.viewData(_amountSlot(IVault.Bucket.Backing, assets[i])));
+            uint256 afterAmount = uint256(KERNEL.viewData(_amountSlot(IVault.Bucket.Redeem, assets[i])));
             if (afterAmount < beforeAmounts[i]) {
                 revert Controller__BackingInvariantBreach(assets[i], beforeAmounts[i], afterAmount);
             }
@@ -589,15 +595,18 @@ contract Controller is IController, AccessControl {
     }
 
     function _namespace(IVault.Bucket bucket) internal pure returns (bytes32 namespace) {
-        if (bucket == IVault.Bucket.Backing) return Slots.BACKING_AMOUNT_SLOT;
+        if (bucket == IVault.Bucket.Redeem) return Slots.BACKING_AMOUNT_SLOT;
         if (bucket == IVault.Bucket.Treasury) return Slots.TREASURY_AMOUNT_SLOT;
         if (bucket == IVault.Bucket.Team) return Slots.TEAM_AMOUNT_SLOT;
+        if (bucket == IVault.Bucket.Borrow) return Slots.ASSET_TOTAL_BORROWED_BASE_SLOT;
+        if (bucket == IVault.Bucket.Collateral) return Slots.TOTAL_COLLATERL_SLOT;
         revert Controller__InvalidSettlementBucket();
     }
 
     function _isProtectedAccountingNamespace(bytes32 namespace) internal pure returns (bool) {
         return namespace == Slots.BACKING_AMOUNT_SLOT || namespace == Slots.TREASURY_AMOUNT_SLOT
-            || namespace == Slots.TEAM_AMOUNT_SLOT;
+            || namespace == Slots.TEAM_AMOUNT_SLOT || namespace == Slots.ASSET_TOTAL_BORROWED_BASE_SLOT
+            || namespace == Slots.TOTAL_COLLATERL_SLOT;
     }
 
     function _isValidStateOp(StateOp op) internal pure returns (bool) {
