@@ -135,7 +135,7 @@ contract Controller is IController, AccessControl {
         PROTOCOL_COLLECTOR = protocolCollector;
         KERNEL = new Kernel(address(this));
         VAULT = new Vault(address(this), address(KERNEL));
-        TOKEN = new EntenToken("Enten", "ENTEN", address(this));
+        TOKEN = new EntenToken("Enten", "ENTEN", address(this), address(0), 0, type(uint256).max);
         KERNEL.setAccountingWriter(address(VAULT));
     }
 
