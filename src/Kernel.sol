@@ -13,6 +13,10 @@ contract Kernel is IKernel {
     error Kernel__OnlyAccountingWriter();
     error Kernel__AccountingWriterAlreadySet();
     error Kernel__AccountingWriterZeroAddress();
+    error Kernel__WriteOverflow();
+    error Kernel__ProtectedSlot();
+
+    uint256 private constant ACCOUNTING_WRITER_SLOT = 0;
 
     address public immutable CONTROLLER;
     address public accountingWriter;
@@ -46,9 +50,25 @@ contract Kernel is IKernel {
         accountingWriter = writer;
     }
 
+    function _ensureWritableSlot(bytes32 slot) internal pure {
+        if (uint256(slot) == ACCOUNTING_WRITER_SLOT) revert Kernel__ProtectedSlot();
+    }
+
+    function _ensureWritableRange(bytes32 startSlot, uint256 nSlots) internal pure {
+        if (nSlots == 0) return;
+
+        uint256 start = uint256(startSlot);
+        uint256 end;
+        unchecked {
+            end = start + nSlots - 1;
+        }
+        if (end < start) revert Kernel__WriteOverflow();
+        if (start <= ACCOUNTING_WRITER_SLOT && ACCOUNTING_WRITER_SLOT <= end) revert Kernel__ProtectedSlot();
+    }
+
     function updateState(bytes32 startSlot, bytes calldata data) external onlyController {
         if (data.length & 31 != 0) revert Kernel__InvalidSlotDataLength();
-
+        _ensureWritableRange(startSlot, data.length >> 5);
         assembly ("memory-safe") {
             let slot := startSlot
             let offset := data.offset
@@ -64,12 +84,20 @@ contract Kernel is IKernel {
     }
 
     function updateState(bytes32 slot, bytes32 data) external onlyController {
+        _ensureWritableSlot(slot);
         assembly ("memory-safe") {
             sstore(slot, data)
         }
     }
 
     function updateState(KernelCall[] calldata calls) external onlyController {
+        for (uint256 i; i < calls.length;) {
+            _ensureWritableSlot(calls[i].slot);
+            unchecked {
+                ++i;
+            }
+        }
+
         assembly ("memory-safe") {
             let calldataptr := calls.offset
             let end := add(calldataptr, shl(6, calls.length))
@@ -83,6 +111,7 @@ contract Kernel is IKernel {
     function add(KernelCall[] calldata calls) external onlyAccountingWriter {
         for (uint256 i = 0; i < calls.length;) {
             bytes32 slot = calls[i].slot;
+            _ensureWritableSlot(slot);
             uint256 data;
             assembly ("memory-safe") {
                 data := sload(slot)
@@ -100,6 +129,7 @@ contract Kernel is IKernel {
     }
 
     function add(bytes32 slot, bytes32 value) external onlyAccountingWriter {
+        _ensureWritableSlot(slot);
         uint256 data;
         assembly ("memory-safe") {
             data := sload(slot)
@@ -114,6 +144,7 @@ contract Kernel is IKernel {
     }
 
     function sub(bytes32 slot, bytes32 value) external onlyAccountingWriter {
+        _ensureWritableSlot(slot);
         uint256 data;
         assembly ("memory-safe") {
             data := sload(slot)
@@ -130,6 +161,7 @@ contract Kernel is IKernel {
     function sub(KernelCall[] calldata calls) external onlyAccountingWriter {
         for (uint256 i = 0; i < calls.length;) {
             bytes32 slot = calls[i].slot;
+            _ensureWritableSlot(slot);
             uint256 data;
             assembly ("memory-safe") {
                 data := sload(slot)
@@ -146,8 +178,6 @@ contract Kernel is IKernel {
     }
 
     function viewData(bytes32 startSlot, uint256 nSlots) external view returns (bytes memory data) {
-        if (nSlots > type(uint256).max >> 5) revert Kernel__SlotReadOverflow();
-
         assembly ("memory-safe") {
             let length := shl(5, nSlots)
             data := mload(0x40)
