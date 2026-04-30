@@ -6,11 +6,10 @@ import {IKernel} from "./interfaces/IKernel.sol";
 contract Kernel is IKernel {
     error Kernel__ControllerZeroAddress();
     error Kernel__InvalidSlotDataLength();
-    error Kernel__SlotReadOverflow();
     error Kernel__AddOverflow();
     error Kernel__SubUnderflow();
     error Kernel__OnlyController();
-    error Kernel__OnlyAccountingWriter();
+    error Kernel__OnlyControllerOrAccountingWriter();
     error Kernel__AccountingWriterAlreadySet();
     error Kernel__AccountingWriterZeroAddress();
     error Kernel__WriteOverflow();
@@ -31,8 +30,8 @@ contract Kernel is IKernel {
         _;
     }
 
-    modifier onlyAccountingWriter() {
-        _onlyAccountingWriter();
+    modifier onlyControllerOrAccountingWriter() {
+        _onlyControllerOrAccountingWriter();
         _;
     }
 
@@ -40,8 +39,10 @@ contract Kernel is IKernel {
         if (msg.sender != CONTROLLER) revert Kernel__OnlyController();
     }
 
-    function _onlyAccountingWriter() internal view {
-        if (msg.sender != CONTROLLER && msg.sender != accountingWriter) revert Kernel__OnlyAccountingWriter();
+    function _onlyControllerOrAccountingWriter() internal view {
+        if (msg.sender != CONTROLLER && msg.sender != accountingWriter) {
+            revert Kernel__OnlyControllerOrAccountingWriter();
+        }
     }
 
     function setAccountingWriter(address writer) external onlyController {
@@ -108,7 +109,7 @@ contract Kernel is IKernel {
         }
     }
 
-    function add(KernelCall[] calldata calls) external onlyAccountingWriter {
+    function add(KernelCall[] calldata calls) external onlyControllerOrAccountingWriter {
         for (uint256 i = 0; i < calls.length;) {
             bytes32 slot = calls[i].slot;
             _ensureWritableSlot(slot);
@@ -128,7 +129,7 @@ contract Kernel is IKernel {
         }
     }
 
-    function add(bytes32 slot, bytes32 value) external onlyAccountingWriter {
+    function add(bytes32 slot, bytes32 value) external onlyControllerOrAccountingWriter {
         _ensureWritableSlot(slot);
         uint256 data;
         assembly ("memory-safe") {
@@ -143,7 +144,7 @@ contract Kernel is IKernel {
         }
     }
 
-    function sub(bytes32 slot, bytes32 value) external onlyAccountingWriter {
+    function sub(bytes32 slot, bytes32 value) external onlyControllerOrAccountingWriter {
         _ensureWritableSlot(slot);
         uint256 data;
         assembly ("memory-safe") {
@@ -158,7 +159,7 @@ contract Kernel is IKernel {
         }
     }
 
-    function sub(KernelCall[] calldata calls) external onlyAccountingWriter {
+    function sub(KernelCall[] calldata calls) external onlyControllerOrAccountingWriter {
         for (uint256 i = 0; i < calls.length;) {
             bytes32 slot = calls[i].slot;
             _ensureWritableSlot(slot);

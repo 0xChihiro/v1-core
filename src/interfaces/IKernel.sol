@@ -6,51 +6,76 @@ interface IKernel {
         bytes32 slot;
         bytes32 data;
     }
-    /// @notice Address which can call functions like add and sub.
-    /// @return the address that is currently stored as the Accounting Writer
-    /// @dev Should be set to the Vault Contract
+    /// @notice Address authorized alongside the controller to call accounting arithmetic functions.
+    /// @return The current accounting writer address.
+    /// @dev Intended to be set to the vault contract.
     function accountingWriter() external view returns (address);
-    /// @notice Set the accounting writer
-    /// @param writer The account you wish to set
+
+    /// @notice Set the accounting writer.
+    /// @param writer The nonzero address to authorize as the accounting writer.
+    /// @dev Callable only by the controller and can only be set once.
     function setAccountingWriter(address writer) external;
-    /// @notice update slot(s) with generic data
-    /// @param startSlot The slot you wish to write to
-    /// @param data The data that starts at the given slot
-    /// @dev The data is written in order starting at the given slot is 32 bytes words
+
+    /// @notice Write contiguous 32-byte words starting at a storage slot.
+    /// @param startSlot The first storage slot to write.
+    /// @param data Packed 32-byte words to write in order.
+    /// @dev Callable only by the controller. `data.length` must be a multiple of 32.
+    ///      Empty data is a no-op. Writes cannot overflow the slot range or touch kernel-owned slots.
     function updateState(bytes32 startSlot, bytes calldata data) external;
-    /// @notice update a single slot with a single 32 byte word
-    /// @param slot The slot you want to write
-    /// @param data The data you want to write
+
+    /// @notice Write a single 32-byte word to a storage slot.
+    /// @param slot The storage slot to write.
+    /// @param data The 32-byte word to store.
+    /// @dev Callable only by the controller. Kernel-owned slots cannot be written through this path.
     function updateState(bytes32 slot, bytes32 data) external;
-    /// @notice write an array of arbitray slots with arbitrary data
-    /// @param calls Array of structs containing a single struct with a single 32 byte word of data.
+
+    /// @notice Write arbitrary 32-byte words to arbitrary storage slots.
+    /// @param calls Slot/data pairs to write.
+    /// @dev Callable only by the controller. Calls are applied in order, so duplicate slots use
+    ///      last-write-wins semantics. Empty arrays are no-ops. Kernel-owned slots cannot be written.
     function updateState(KernelCall[] calldata calls) external;
-    /// @notice update a slot by adding the given value to it
-    /// @param slot The slot to update
-    /// @param value The value to add to the slot
-    /// @dev none of the add or sub functions overwrite values
+
+    /// @notice Add a value to the numeric value stored in a slot.
+    /// @param slot The storage slot to update.
+    /// @param value The amount to add.
+    /// @dev Callable by the controller or accounting writer. Reverts on overflow. The kernel assumes
+    ///      callers only use arithmetic against numeric slots and only blocks kernel-owned slots.
     function add(bytes32 slot, bytes32 value) external;
-    /// @notice perform multiple adds in one call
-    /// @param calls Array of structs containing one slot and one 32 byte word of data.
+
+    /// @notice Apply multiple sequential additions.
+    /// @param calls Slot/value pairs to add.
+    /// @dev Callable by the controller or accounting writer. Calls are applied in order and the whole
+    ///      call reverts if any addition overflows or targets a kernel-owned slot.
     function add(KernelCall[] calldata calls) external;
-    /// @notice subtract from a given slot
-    /// @param slot The slot to subtract from its value
-    /// @param value The amount to subtract from the stored value
+
+    /// @notice Subtract a value from the numeric value stored in a slot.
+    /// @param slot The storage slot to update.
+    /// @param value The amount to subtract.
+    /// @dev Callable by the controller or accounting writer. Reverts on underflow. The kernel assumes
+    ///      callers only use arithmetic against numeric slots and only blocks kernel-owned slots.
     function sub(bytes32 slot, bytes32 value) external;
-    /// @notice perform a batch of subtract calls
-    /// @param calls Array of slot and value pairings to subtract from the slots stored data
+
+    /// @notice Apply multiple sequential subtractions.
+    /// @param calls Slot/value pairs to subtract.
+    /// @dev Callable by the controller or accounting writer. Calls are applied in order and the whole
+    ///      call reverts if any subtraction underflows or targets a kernel-owned slot.
     function sub(KernelCall[] calldata calls) external;
-    /// @notice view the value of contingious bit of storage
-    /// @param startSlot The value of the starting slot
+
+    /// @notice Read a contiguous range of raw storage slots.
+    /// @param startSlot The first storage slot to read.
     /// @param nSlots The number of slots to read.
-    /// @return A continious slice of data from the slots give
+    /// @return A packed byte array containing each 32-byte slot value in order.
+    /// @dev This is a raw read API. Passing zero slots returns empty bytes.
     function viewData(bytes32 startSlot, uint256 nSlots) external view returns (bytes memory);
-    /// @notice view a series of slots that do not have to be contingious
-    /// @param slots Array of slot values to read
-    /// @return array of stored values
+
+    /// @notice Read arbitrary raw storage slots.
+    /// @param slots Storage slots to read.
+    /// @return Stored values in the same order as `slots`.
+    /// @dev Duplicate slots return duplicate values in order. Passing an empty array returns an empty array.
     function viewData(bytes32[] calldata slots) external view returns (bytes32[] memory);
-    /// @notice view a single store slot
-    /// @param slot The slot to view
-    /// @return the value stored at the given slot
+
+    /// @notice Read a single raw storage slot.
+    /// @param slot The storage slot to read.
+    /// @return The value stored at the given slot.
     function viewData(bytes32 slot) external view returns (bytes32);
 }

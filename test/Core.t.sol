@@ -189,7 +189,7 @@ contract CoreTest is Test {
         kernel.setAccountingWriter(address(vault));
 
         bytes32 slot = keccak256("random add slot");
-        vm.expectRevert(Kernel.Kernel__OnlyAccountingWriter.selector);
+        vm.expectRevert(Kernel.Kernel__OnlyControllerOrAccountingWriter.selector);
         kernel.add(slot, bytes32(value));
 
         vm.prank(controller);
@@ -228,7 +228,7 @@ contract CoreTest is Test {
         calls[1] = IKernel.KernelCall({slot: blankSlot, data: bytes32(uint256(50))});
         calls[2] = IKernel.KernelCall({slot: secondBlankSlot, data: bytes32(uint256(75))});
 
-        vm.expectRevert(Kernel.Kernel__OnlyAccountingWriter.selector);
+        vm.expectRevert(Kernel.Kernel__OnlyControllerOrAccountingWriter.selector);
         kernel.add(calls);
 
         vm.prank(controller);
@@ -355,7 +355,7 @@ contract CoreTest is Test {
 
         vm.assume(value != 0);
         bytes32 slot = keccak256("sub slot");
-        vm.expectRevert(Kernel.Kernel__OnlyAccountingWriter.selector);
+        vm.expectRevert(Kernel.Kernel__OnlyControllerOrAccountingWriter.selector);
         kernel.sub(slot, bytes32(bytes16(value)));
 
         vm.startPrank(controller);
@@ -397,7 +397,7 @@ contract CoreTest is Test {
         controllerCalls[0] = IKernel.KernelCall({slot: firstSlot, data: bytes32(uint256(40))});
         controllerCalls[1] = IKernel.KernelCall({slot: secondSlot, data: bytes32(uint256(75))});
 
-        vm.expectRevert(Kernel.Kernel__OnlyAccountingWriter.selector);
+        vm.expectRevert(Kernel.Kernel__OnlyControllerOrAccountingWriter.selector);
         kernel.sub(controllerCalls);
 
         vm.prank(controller);
@@ -581,7 +581,10 @@ contract CoreTest is Test {
         bytes32 secondSlot = bytes32(uint256(101));
         bytes32 untouchedSlot = bytes32(uint256(102));
 
+        // These literals are exactly 32 bytes.
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes32 firstWord = bytes32("abcdefghijklmnopqrstuvwxyz123456");
+        // forge-lint: disable-next-line(unsafe-typecast)
         bytes32 secondWord = bytes32("ABCDEFGHIJKLMNOPQRSTUVWXYZ654321");
         bytes32 untouchedValue = keccak256("untouched update state slice value");
         bytes memory data = abi.encodePacked(firstWord, secondWord);
