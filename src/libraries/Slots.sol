@@ -30,4 +30,6 @@ library Slots {
     bytes32 internal constant MIN_SCALAR_SLOT = keccak256("enten.auction.min.scalar");
     bytes32 internal constant EPOCH_LENGTH_SLOT = keccak256("enten.auction.epoch.length");
     bytes32 internal constant EPOCH_ID_SLOT = keccak256("enten.aucion.epoch.id");
+
+    // Curve Slots
 }
