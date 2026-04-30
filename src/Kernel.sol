@@ -5,24 +5,22 @@ import {IKernel} from "./interfaces/IKernel.sol";
 
 contract Kernel is IKernel {
     error Kernel__ControllerZeroAddress();
+    error Kernel__VaultZeroAddress();
     error Kernel__InvalidSlotDataLength();
     error Kernel__AddOverflow();
     error Kernel__SubUnderflow();
     error Kernel__OnlyController();
     error Kernel__OnlyControllerOrAccountingWriter();
-    error Kernel__AccountingWriterAlreadySet();
-    error Kernel__AccountingWriterZeroAddress();
     error Kernel__WriteOverflow();
-    error Kernel__ProtectedSlot();
-
-    uint256 private constant ACCOUNTING_WRITER_SLOT = 0;
 
     address public immutable CONTROLLER;
-    address public accountingWriter;
+    address public immutable VAULT;
 
-    constructor(address controller) {
+    constructor(address controller, address vault) {
         if (controller == address(0)) revert Kernel__ControllerZeroAddress();
+        if (vault == address(0)) revert Kernel__VaultZeroAddress();
         CONTROLLER = controller;
+        VAULT = vault;
     }
 
     modifier onlyController() {
@@ -40,19 +38,13 @@ contract Kernel is IKernel {
     }
 
     function _onlyControllerOrAccountingWriter() internal view {
-        if (msg.sender != CONTROLLER && msg.sender != accountingWriter) {
+        if (msg.sender != CONTROLLER && msg.sender != VAULT) {
             revert Kernel__OnlyControllerOrAccountingWriter();
         }
     }
 
-    function setAccountingWriter(address writer) external onlyController {
-        if (accountingWriter != address(0)) revert Kernel__AccountingWriterAlreadySet();
-        if (writer == address(0)) revert Kernel__AccountingWriterZeroAddress();
-        accountingWriter = writer;
-    }
-
-    function _ensureWritableSlot(bytes32 slot) internal pure {
-        if (uint256(slot) == ACCOUNTING_WRITER_SLOT) revert Kernel__ProtectedSlot();
+    function accountingWriter() external view returns (address) {
+        return VAULT;
     }
 
     function _ensureWritableRange(bytes32 startSlot, uint256 nSlots) internal pure {
@@ -64,7 +56,6 @@ contract Kernel is IKernel {
             end = start + nSlots - 1;
         }
         if (end < start) revert Kernel__WriteOverflow();
-        if (start <= ACCOUNTING_WRITER_SLOT && ACCOUNTING_WRITER_SLOT <= end) revert Kernel__ProtectedSlot();
     }
 
     function updateState(bytes32 startSlot, bytes calldata data) external onlyController {
@@ -85,20 +76,12 @@ contract Kernel is IKernel {
     }
 
     function updateState(bytes32 slot, bytes32 data) external onlyController {
-        _ensureWritableSlot(slot);
         assembly ("memory-safe") {
             sstore(slot, data)
         }
     }
 
     function updateState(KernelCall[] calldata calls) external onlyController {
-        for (uint256 i; i < calls.length;) {
-            _ensureWritableSlot(calls[i].slot);
-            unchecked {
-                ++i;
-            }
-        }
-
         assembly ("memory-safe") {
             let calldataptr := calls.offset
             let end := add(calldataptr, shl(6, calls.length))
@@ -112,7 +95,6 @@ contract Kernel is IKernel {
     function add(KernelCall[] calldata calls) external onlyControllerOrAccountingWriter {
         for (uint256 i = 0; i < calls.length;) {
             bytes32 slot = calls[i].slot;
-            _ensureWritableSlot(slot);
             uint256 data;
             assembly ("memory-safe") {
                 data := sload(slot)
@@ -130,7 +112,6 @@ contract Kernel is IKernel {
     }
 
     function add(bytes32 slot, bytes32 value) external onlyControllerOrAccountingWriter {
-        _ensureWritableSlot(slot);
         uint256 data;
         assembly ("memory-safe") {
             data := sload(slot)
@@ -145,7 +126,6 @@ contract Kernel is IKernel {
     }
 
     function sub(bytes32 slot, bytes32 value) external onlyControllerOrAccountingWriter {
-        _ensureWritableSlot(slot);
         uint256 data;
         assembly ("memory-safe") {
             data := sload(slot)
@@ -162,7 +142,6 @@ contract Kernel is IKernel {
     function sub(KernelCall[] calldata calls) external onlyControllerOrAccountingWriter {
         for (uint256 i = 0; i < calls.length;) {
             bytes32 slot = calls[i].slot;
-            _ensureWritableSlot(slot);
             uint256 data;
             assembly ("memory-safe") {
                 data := sload(slot)

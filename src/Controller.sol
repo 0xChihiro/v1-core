@@ -3,8 +3,6 @@ pragma solidity 0.8.34;
 
 import {AccessControl} from "openzeppelin/contracts/access/AccessControl.sol";
 import {EntenToken} from "./EntenToken.sol";
-import {Kernel} from "./Kernel.sol";
-import {Vault} from "./Vault.sol";
 import {IController, IModule, IPolicy, Keycode, Permission} from "./interfaces/IController.sol";
 import {IVault} from "./interfaces/IVault.sol";
 import {IKernel} from "./interfaces/IKernel.sol";
@@ -127,17 +125,22 @@ contract Controller is IController, AccessControl {
     error Controller__SettlementOverAllocated(address asset);
     error Controller__BackingInvariantBreach(address asset, uint256 beforeAmount, uint256 afterAmount);
 
-    constructor(address admin, address protocolCollector) {
-        if (admin == address(0) || protocolCollector == address(0)) revert Controller__ZeroAddress();
+    constructor(address admin, address protocolCollector, address kernel, address vault, address token) {
+        if (
+            admin == address(0) || protocolCollector == address(0) || kernel == address(0) || vault == address(0)
+                || token == address(0)
+        ) revert Controller__ZeroAddress();
+        if (kernel.code.length == 0) revert Controller__TargetNotAContract(kernel);
+        if (vault.code.length == 0) revert Controller__TargetNotAContract(vault);
+        if (token.code.length == 0) revert Controller__TargetNotAContract(token);
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(EXECUTOR_ROLE, admin);
 
         PROTOCOL_COLLECTOR = protocolCollector;
-        KERNEL = IKernel(new Kernel(address(this)));
-        VAULT = IVault(new Vault(address(this), address(KERNEL)));
-        TOKEN = new EntenToken("Enten", "ENTEN", address(this), address(0), 0, type(uint256).max);
-        KERNEL.setAccountingWriter(address(VAULT));
+        KERNEL = IKernel(kernel);
+        VAULT = IVault(vault);
+        TOKEN = EntenToken(token);
     }
 
     modifier onlyActivePolicy() {

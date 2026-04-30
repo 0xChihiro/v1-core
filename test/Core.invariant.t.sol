@@ -1,7 +1,6 @@
 ///SPDX-License-Unlicensed
 pragma solidity 0.8.34;
 
-import {Vault} from "../src/Vault.sol";
 import {Kernel} from "../src/Kernel.sol";
 import {IKernel} from "../src/interfaces/IKernel.sol";
 import {Test} from "forge-std/Test.sol";
@@ -26,7 +25,7 @@ contract CoreInvariantHandler is Test {
     }
 
     function slotAt(uint256 index) public pure returns (bytes32) {
-        return bytes32(index + 1);
+        return bytes32(index);
     }
 
     function updateSingle(uint256 seed, bytes32 value) external {
@@ -191,49 +190,6 @@ contract CoreInvariantHandler is Test {
         expected = nextExpected;
     }
 
-    function protectedSlotWrite(uint8 mode, bytes32 value) external {
-        uint8 selectedMode = mode % 7;
-
-        if (selectedMode == 0) {
-            vm.prank(controller);
-            vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
-            kernel.updateState(bytes32(0), value);
-        } else if (selectedMode == 1) {
-            IKernel.KernelCall[] memory calls = new IKernel.KernelCall[](1);
-            calls[0] = IKernel.KernelCall({slot: bytes32(0), data: value});
-
-            vm.prank(controller);
-            vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
-            kernel.updateState(calls);
-        } else if (selectedMode == 2) {
-            vm.prank(controller);
-            vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
-            kernel.updateState(bytes32(0), abi.encodePacked(value));
-        } else if (selectedMode == 3) {
-            vm.prank(writer);
-            vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
-            kernel.add(bytes32(0), value);
-        } else if (selectedMode == 4) {
-            IKernel.KernelCall[] memory calls = new IKernel.KernelCall[](1);
-            calls[0] = IKernel.KernelCall({slot: bytes32(0), data: value});
-
-            vm.prank(writer);
-            vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
-            kernel.add(calls);
-        } else if (selectedMode == 5) {
-            vm.prank(writer);
-            vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
-            kernel.sub(bytes32(0), value);
-        } else {
-            IKernel.KernelCall[] memory calls = new IKernel.KernelCall[](1);
-            calls[0] = IKernel.KernelCall({slot: bytes32(0), data: value});
-
-            vm.prank(writer);
-            vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
-            kernel.sub(calls);
-        }
-    }
-
     function overflowingSliceWrite(bytes32 firstValue, bytes32 secondValue) external {
         bytes memory data = abi.encodePacked(firstValue, secondValue);
 
@@ -260,20 +216,16 @@ contract CoreInvariantHandler is Test {
 
 contract CoreInvariantTest is Test {
     Kernel kernel;
-    Vault vault;
     CoreInvariantHandler handler;
     address controller = makeAddr("Controller");
+    address vault = makeAddr("Vault");
 
     function setUp() public {
-        kernel = new Kernel(controller);
-        vault = new Vault(controller, address(kernel));
+        kernel = new Kernel(controller, vault);
 
-        vm.prank(controller);
-        kernel.setAccountingWriter(address(vault));
+        handler = new CoreInvariantHandler(kernel, controller, vault);
 
-        handler = new CoreInvariantHandler(kernel, controller, address(vault));
-
-        bytes4[] memory selectors = new bytes4[](9);
+        bytes4[] memory selectors = new bytes4[](8);
         selectors[0] = CoreInvariantHandler.updateSingle.selector;
         selectors[1] = CoreInvariantHandler.updateArray.selector;
         selectors[2] = CoreInvariantHandler.updateSlice.selector;
@@ -281,18 +233,16 @@ contract CoreInvariantTest is Test {
         selectors[4] = CoreInvariantHandler.subSingle.selector;
         selectors[5] = CoreInvariantHandler.addArray.selector;
         selectors[6] = CoreInvariantHandler.subArray.selector;
-        selectors[7] = CoreInvariantHandler.protectedSlotWrite.selector;
-        selectors[8] = CoreInvariantHandler.overflowingSliceWrite.selector;
+        selectors[7] = CoreInvariantHandler.overflowingSliceWrite.selector;
 
         excludeContract(address(kernel));
-        excludeContract(address(vault));
         targetContract(address(handler));
         targetSelector(FuzzSelector({addr: address(handler), selectors: selectors}));
     }
 
     function invariant_accountingWriterCannotChange() public view {
-        assertEq(kernel.accountingWriter(), address(vault));
-        assertEq(kernel.viewData(bytes32(0)), bytes32(uint256(uint160(address(vault)))));
+        assertEq(kernel.VAULT(), vault);
+        assertEq(kernel.accountingWriter(), vault);
     }
 
     function invariant_trackedSlotsMatchModel() public view {
@@ -305,7 +255,7 @@ contract CoreInvariantTest is Test {
     }
 
     function invariant_contiguousReadMatchesModel() public view {
-        bytes memory actual = kernel.viewData(bytes32(uint256(1)), 8);
+        bytes memory actual = kernel.viewData(bytes32(0), 8);
         bytes memory expectedData = abi.encodePacked(
             handler.expectedAt(0),
             handler.expectedAt(1),
@@ -365,7 +315,7 @@ contract CoreInvariantTest is Test {
         kernel.updateState(startSlot, abi.encodePacked(value));
 
         assertEq(kernel.viewData(startSlot), value);
-        assertEq(kernel.accountingWriter(), address(vault));
+        assertEq(kernel.accountingWriter(), vault);
     }
 
     function testFuzzUpdateArrayDuplicateSlotsLastWriteWins(bytes32 firstValue, bytes32 middleValue, bytes32 lastValue)
@@ -387,38 +337,41 @@ contract CoreInvariantTest is Test {
     }
 
     function testFuzzAddSubRoundTrip(uint8 rawSlot, uint128 startingValue, uint128 delta) public {
-        bytes32 slot = bytes32(uint256((uint256(rawSlot) % 8) + 1));
+        bytes32 slot = bytes32(uint256(rawSlot) % 8);
 
         vm.prank(controller);
         kernel.updateState(slot, bytes32(uint256(startingValue)));
 
-        vm.prank(address(vault));
+        vm.prank(vault);
         kernel.add(slot, bytes32(uint256(delta)));
 
-        vm.prank(address(vault));
+        vm.prank(vault);
         kernel.sub(slot, bytes32(uint256(delta)));
 
         assertEq(uint256(kernel.viewData(slot)), uint256(startingValue));
     }
 
-    function testFuzzProtectedSlotCannotBeWritten(bytes32 value, uint8 mode) public {
+    function testFuzzSlotZeroWritesDoNotChangeImmutableVault(bytes32 value, uint8 mode) public {
         uint8 selectedMode = mode % 3;
 
         if (selectedMode == 0) {
             vm.prank(controller);
-            vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
             kernel.updateState(bytes32(0), value);
         } else if (selectedMode == 1) {
-            vm.prank(address(vault));
-            vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
+            vm.prank(controller);
+            kernel.updateState(bytes32(0), bytes32(0));
+
+            vm.prank(vault);
             kernel.add(bytes32(0), value);
         } else {
-            vm.prank(address(vault));
-            vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
+            vm.prank(controller);
+            kernel.updateState(bytes32(0), value);
+
+            vm.prank(vault);
             kernel.sub(bytes32(0), value);
         }
 
-        assertEq(kernel.accountingWriter(), address(vault));
-        assertEq(kernel.viewData(bytes32(0)), bytes32(uint256(uint160(address(vault)))));
+        assertEq(kernel.VAULT(), vault);
+        assertEq(kernel.accountingWriter(), vault);
     }
 }

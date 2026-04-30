@@ -1,113 +1,83 @@
 ///SPDX-License-Unlicensed
 pragma solidity 0.8.34;
 
-import {Vault} from "../src/Vault.sol";
 import {Kernel} from "../src/Kernel.sol";
 import {IKernel} from "../src/interfaces/IKernel.sol";
 import {Test} from "forge-std/Test.sol";
 
 contract CoreTest is Test {
-    Vault vault;
     Kernel kernel;
     address controller = makeAddr("Controller");
+    address vault = makeAddr("Vault");
 
     function setUp() public {
+        kernel = new Kernel(controller, vault);
+    }
+
+    function testConstructorSetsImmutableAddresses() public {
         vm.expectRevert(Kernel.Kernel__ControllerZeroAddress.selector);
-        kernel = new Kernel(address(0));
+        new Kernel(address(0), vault);
 
-        kernel = new Kernel(controller);
-        vault = new Vault(controller, address(kernel));
+        vm.expectRevert(Kernel.Kernel__VaultZeroAddress.selector);
+        new Kernel(controller, address(0));
+
+        Kernel configuredKernel = new Kernel(controller, vault);
+
+        assertEq(configuredKernel.CONTROLLER(), controller);
+        assertEq(configuredKernel.VAULT(), vault);
+        assertEq(configuredKernel.accountingWriter(), vault);
+        assertEq(configuredKernel.viewData(bytes32(0)), bytes32(0));
     }
 
-    function testSetAccountWriter() public {
-        vm.expectRevert(Kernel.Kernel__OnlyController.selector);
-        kernel.setAccountingWriter(address(vault));
-
-        vm.startPrank(controller);
-        vm.expectRevert(Kernel.Kernel__AccountingWriterZeroAddress.selector);
-        kernel.setAccountingWriter(address(0));
-        vm.stopPrank();
+    function testSlotZeroCanBeWrittenWithoutChangingImmutableVault() public {
+        bytes32 slotZero = bytes32(0);
+        bytes32 firstValue = bytes32(uint256(100));
+        bytes32 latestValue = bytes32(uint256(125));
 
         vm.prank(controller);
-        kernel.setAccountingWriter(address(vault));
-
-        vm.startPrank(controller);
-        vm.expectRevert(Kernel.Kernel__AccountingWriterAlreadySet.selector);
-        kernel.setAccountingWriter(address(vault));
-        vm.stopPrank();
-
-        address writer = kernel.accountingWriter();
-        assertEq(address(vault), writer);
-    }
-
-    function testAccountingWriterSlotCannotBeWrittenThroughStateApi() public {
-        bytes32 protectedSlot = bytes32(0);
-        bytes32 protectedValue = bytes32(uint256(uint160(makeAddr("BadAccountingWriter"))));
-
-        vm.prank(controller);
-        kernel.setAccountingWriter(address(vault));
-
-        vm.prank(controller);
-        vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
-        kernel.updateState(protectedSlot, protectedValue);
+        kernel.updateState(slotZero, firstValue);
 
         IKernel.KernelCall[] memory updateCalls = new IKernel.KernelCall[](1);
-        updateCalls[0] = IKernel.KernelCall({slot: protectedSlot, data: protectedValue});
+        updateCalls[0] = IKernel.KernelCall({slot: slotZero, data: latestValue});
 
         vm.prank(controller);
-        vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
         kernel.updateState(updateCalls);
 
-        bytes memory sliceData = abi.encodePacked(protectedValue, keccak256("next slot value"));
-
-        vm.prank(controller);
-        vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
-        kernel.updateState(protectedSlot, sliceData);
-
-        vm.prank(controller);
-        vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
-        kernel.add(protectedSlot, bytes32(uint256(1)));
+        assertEq(kernel.viewData(slotZero), latestValue);
 
         IKernel.KernelCall[] memory addCalls = new IKernel.KernelCall[](1);
-        addCalls[0] = IKernel.KernelCall({slot: protectedSlot, data: bytes32(uint256(1))});
+        addCalls[0] = IKernel.KernelCall({slot: slotZero, data: bytes32(uint256(5))});
 
-        vm.prank(address(vault));
-        vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
+        vm.prank(vault);
         kernel.add(addCalls);
 
-        vm.prank(controller);
-        vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
-        kernel.sub(protectedSlot, bytes32(uint256(1)));
-
         IKernel.KernelCall[] memory subCalls = new IKernel.KernelCall[](1);
-        subCalls[0] = IKernel.KernelCall({slot: protectedSlot, data: bytes32(uint256(1))});
+        subCalls[0] = IKernel.KernelCall({slot: slotZero, data: bytes32(uint256(10))});
 
-        vm.prank(address(vault));
-        vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
+        vm.prank(vault);
         kernel.sub(subCalls);
 
-        assertEq(kernel.accountingWriter(), address(vault));
+        assertEq(kernel.viewData(slotZero), bytes32(uint256(120)));
+        assertEq(kernel.VAULT(), vault);
+        assertEq(kernel.accountingWriter(), vault);
     }
 
-    function testUpdateStateArrayRevertsAtomically() public {
+    function testUpdateStateArrayUnauthorizedRevertsWithoutWriting() public {
         bytes32 firstSlot = keccak256("first atomic update state slot");
         bytes32 thirdSlot = keccak256("third atomic update state slot");
         bytes32 firstValue = keccak256("first atomic update state value");
-        bytes32 protectedValue = bytes32(uint256(uint160(makeAddr("BadAccountingWriter"))));
         bytes32 thirdValue = keccak256("third atomic update state value");
 
-        IKernel.KernelCall[] memory calls = new IKernel.KernelCall[](3);
+        IKernel.KernelCall[] memory calls = new IKernel.KernelCall[](2);
         calls[0] = IKernel.KernelCall({slot: firstSlot, data: firstValue});
-        calls[1] = IKernel.KernelCall({slot: bytes32(0), data: protectedValue});
-        calls[2] = IKernel.KernelCall({slot: thirdSlot, data: thirdValue});
+        calls[1] = IKernel.KernelCall({slot: thirdSlot, data: thirdValue});
 
-        vm.prank(controller);
-        vm.expectRevert(Kernel.Kernel__ProtectedSlot.selector);
+        vm.expectRevert(Kernel.Kernel__OnlyController.selector);
         kernel.updateState(calls);
 
         assertEq(kernel.viewData(firstSlot), bytes32(0));
         assertEq(kernel.viewData(thirdSlot), bytes32(0));
-        assertEq(kernel.accountingWriter(), address(0));
+        assertEq(kernel.accountingWriter(), vault);
     }
 
     function testUpdateStateArrayDuplicateSlotsLastWriteWins() public {
@@ -185,8 +155,6 @@ contract CoreTest is Test {
     function testAddSingle(uint256 value) public {
         vm.assume(value != 0);
         uint256 overflow = type(uint256).max;
-        vm.prank(controller);
-        kernel.setAccountingWriter(address(vault));
 
         bytes32 slot = keccak256("random add slot");
         vm.expectRevert(Kernel.Kernel__OnlyControllerOrAccountingWriter.selector);
@@ -197,7 +165,7 @@ contract CoreTest is Test {
         uint256 data = uint256(kernel.viewData(slot));
         assertEq(data, value);
 
-        vm.startPrank(address(vault));
+        vm.startPrank(vault);
         vm.expectRevert(Kernel.Kernel__AddOverflow.selector);
         kernel.add(slot, bytes32(overflow));
         kernel.add(bytes32(uint256(1)), bytes32(value));
@@ -215,9 +183,6 @@ contract CoreTest is Test {
         5. Ensure that all slots hold the correct values.
     */
     function testAddMultiple() public {
-        vm.prank(controller);
-        kernel.setAccountingWriter(address(vault));
-
         bytes32 existingSlot = keccak256("existing add multiple slot");
         bytes32 blankSlot = keccak256("blank add multiple slot");
         bytes32 secondBlankSlot = keccak256("second blank add multiple slot");
@@ -247,7 +212,7 @@ contract CoreTest is Test {
         assertEq(uint256(kernel.viewData(blankSlot)), 0);
         assertEq(uint256(kernel.viewData(overflowSlot)), type(uint256).max);
 
-        vm.prank(address(vault));
+        vm.prank(vault);
         kernel.add(calls);
 
         assertEq(uint256(kernel.viewData(existingSlot)), 125);
@@ -261,7 +226,6 @@ contract CoreTest is Test {
         bytes32 thirdSlot = keccak256("third atomic add slot");
 
         vm.startPrank(controller);
-        kernel.setAccountingWriter(address(vault));
         kernel.updateState(firstSlot, bytes32(uint256(100)));
         kernel.updateState(overflowSlot, bytes32(type(uint256).max));
         vm.stopPrank();
@@ -271,7 +235,7 @@ contract CoreTest is Test {
         calls[1] = IKernel.KernelCall({slot: overflowSlot, data: bytes32(uint256(1))});
         calls[2] = IKernel.KernelCall({slot: thirdSlot, data: bytes32(uint256(50))});
 
-        vm.prank(address(vault));
+        vm.prank(vault);
         vm.expectRevert(Kernel.Kernel__AddOverflow.selector);
         kernel.add(calls);
 
@@ -285,18 +249,17 @@ contract CoreTest is Test {
         bytes32 blankSlot = keccak256("blank add zero slot");
 
         vm.startPrank(controller);
-        kernel.setAccountingWriter(address(vault));
         kernel.updateState(existingSlot, bytes32(uint256(100)));
         vm.stopPrank();
 
-        vm.prank(address(vault));
+        vm.prank(vault);
         kernel.add(existingSlot, bytes32(0));
 
         IKernel.KernelCall[] memory calls = new IKernel.KernelCall[](2);
         calls[0] = IKernel.KernelCall({slot: existingSlot, data: bytes32(0)});
         calls[1] = IKernel.KernelCall({slot: blankSlot, data: bytes32(0)});
 
-        vm.prank(address(vault));
+        vm.prank(vault);
         kernel.add(calls);
 
         assertEq(uint256(kernel.viewData(existingSlot)), 100);
@@ -308,7 +271,6 @@ contract CoreTest is Test {
         bytes32 otherSlot = keccak256("other duplicate add slot");
 
         vm.startPrank(controller);
-        kernel.setAccountingWriter(address(vault));
         kernel.updateState(duplicateSlot, bytes32(uint256(10)));
         vm.stopPrank();
 
@@ -317,7 +279,7 @@ contract CoreTest is Test {
         calls[1] = IKernel.KernelCall({slot: otherSlot, data: bytes32(uint256(1))});
         calls[2] = IKernel.KernelCall({slot: duplicateSlot, data: bytes32(uint256(7))});
 
-        vm.prank(address(vault));
+        vm.prank(vault);
         kernel.add(calls);
 
         assertEq(uint256(kernel.viewData(duplicateSlot)), 22);
@@ -328,7 +290,6 @@ contract CoreTest is Test {
         bytes32 duplicateSlot = keccak256("duplicate add overflow slot");
 
         vm.startPrank(controller);
-        kernel.setAccountingWriter(address(vault));
         kernel.updateState(duplicateSlot, bytes32(type(uint256).max - 5));
         vm.stopPrank();
 
@@ -336,7 +297,7 @@ contract CoreTest is Test {
         calls[0] = IKernel.KernelCall({slot: duplicateSlot, data: bytes32(uint256(4))});
         calls[1] = IKernel.KernelCall({slot: duplicateSlot, data: bytes32(uint256(2))});
 
-        vm.prank(address(vault));
+        vm.prank(vault);
         vm.expectRevert(Kernel.Kernel__AddOverflow.selector);
         kernel.add(calls);
 
@@ -350,9 +311,6 @@ contract CoreTest is Test {
         4. Ensure that if a value will underflow it reverts.
     */
     function testSubSingle(uint128 value) public {
-        vm.prank(controller);
-        kernel.setAccountingWriter(address(vault));
-
         vm.assume(value != 0);
         bytes32 slot = keccak256("sub slot");
         vm.expectRevert(Kernel.Kernel__OnlyControllerOrAccountingWriter.selector);
@@ -364,7 +322,7 @@ contract CoreTest is Test {
         kernel.add(slot, bytes32(uint256(value) * 2));
         vm.stopPrank();
 
-        vm.prank(address(vault));
+        vm.prank(vault);
         kernel.sub(slot, bytes32(uint256(value)));
 
         uint256 storedValue = uint256(kernel.viewData(slot));
@@ -380,9 +338,6 @@ contract CoreTest is Test {
         5. Ensure that slots that already have values stored in them show that they have been updated
     */
     function testSubMultiple() public {
-        vm.prank(controller);
-        kernel.setAccountingWriter(address(vault));
-
         bytes32 firstSlot = keccak256("first sub multiple slot");
         bytes32 secondSlot = keccak256("second sub multiple slot");
         bytes32 thirdSlot = keccak256("third sub multiple slot");
@@ -410,7 +365,7 @@ contract CoreTest is Test {
         writerCalls[0] = IKernel.KernelCall({slot: firstSlot, data: bytes32(uint256(10))});
         writerCalls[1] = IKernel.KernelCall({slot: thirdSlot, data: bytes32(uint256(125))});
 
-        vm.prank(address(vault));
+        vm.prank(vault);
         kernel.sub(writerCalls);
 
         assertEq(uint256(kernel.viewData(firstSlot)), 50);
@@ -434,7 +389,6 @@ contract CoreTest is Test {
         bytes32 thirdSlot = keccak256("third atomic sub slot");
 
         vm.startPrank(controller);
-        kernel.setAccountingWriter(address(vault));
         kernel.updateState(firstSlot, bytes32(uint256(100)));
         kernel.updateState(underflowSlot, bytes32(uint256(10)));
         kernel.updateState(thirdSlot, bytes32(uint256(200)));
@@ -445,7 +399,7 @@ contract CoreTest is Test {
         calls[1] = IKernel.KernelCall({slot: underflowSlot, data: bytes32(uint256(11))});
         calls[2] = IKernel.KernelCall({slot: thirdSlot, data: bytes32(uint256(50))});
 
-        vm.prank(address(vault));
+        vm.prank(vault);
         vm.expectRevert(Kernel.Kernel__SubUnderflow.selector);
         kernel.sub(calls);
 
@@ -459,18 +413,17 @@ contract CoreTest is Test {
         bytes32 blankSlot = keccak256("blank sub zero slot");
 
         vm.startPrank(controller);
-        kernel.setAccountingWriter(address(vault));
         kernel.updateState(existingSlot, bytes32(uint256(100)));
         vm.stopPrank();
 
-        vm.prank(address(vault));
+        vm.prank(vault);
         kernel.sub(existingSlot, bytes32(0));
 
         IKernel.KernelCall[] memory calls = new IKernel.KernelCall[](2);
         calls[0] = IKernel.KernelCall({slot: existingSlot, data: bytes32(0)});
         calls[1] = IKernel.KernelCall({slot: blankSlot, data: bytes32(0)});
 
-        vm.prank(address(vault));
+        vm.prank(vault);
         kernel.sub(calls);
 
         assertEq(uint256(kernel.viewData(existingSlot)), 100);
@@ -482,7 +435,6 @@ contract CoreTest is Test {
         bytes32 otherSlot = keccak256("other duplicate sub slot");
 
         vm.startPrank(controller);
-        kernel.setAccountingWriter(address(vault));
         kernel.updateState(duplicateSlot, bytes32(uint256(20)));
         kernel.updateState(otherSlot, bytes32(uint256(10)));
         vm.stopPrank();
@@ -492,7 +444,7 @@ contract CoreTest is Test {
         calls[1] = IKernel.KernelCall({slot: otherSlot, data: bytes32(uint256(4))});
         calls[2] = IKernel.KernelCall({slot: duplicateSlot, data: bytes32(uint256(7))});
 
-        vm.prank(address(vault));
+        vm.prank(vault);
         kernel.sub(calls);
 
         assertEq(uint256(kernel.viewData(duplicateSlot)), 8);
@@ -503,7 +455,6 @@ contract CoreTest is Test {
         bytes32 duplicateSlot = keccak256("duplicate sub underflow slot");
 
         vm.startPrank(controller);
-        kernel.setAccountingWriter(address(vault));
         kernel.updateState(duplicateSlot, bytes32(uint256(10)));
         vm.stopPrank();
 
@@ -511,7 +462,7 @@ contract CoreTest is Test {
         calls[0] = IKernel.KernelCall({slot: duplicateSlot, data: bytes32(uint256(6))});
         calls[1] = IKernel.KernelCall({slot: duplicateSlot, data: bytes32(uint256(5))});
 
-        vm.prank(address(vault));
+        vm.prank(vault);
         vm.expectRevert(Kernel.Kernel__SubUnderflow.selector);
         kernel.sub(calls);
 
