@@ -3,9 +3,12 @@ pragma solidity 0.8.34;
 
 import {AccessControl} from "openzeppelin/contracts/access/AccessControl.sol";
 import {EntenToken} from "./EntenToken.sol";
-import {IController, IModule, IPolicy, Keycode, Permission} from "./interfaces/IController.sol";
+import {IController} from "./interfaces/IController.sol";
+import {Keycode, Permissions, Actions, ensureContract, ensureValidKeycode} from "./Utils.sol";
 import {IVault} from "./interfaces/IVault.sol";
 import {IKernel} from "./interfaces/IKernel.sol";
+import {Module} from "./Module.sol";
+import {Policy} from "./Policy.sol";
 import {Slots} from "./libraries/Slots.sol";
 
 contract Controller is IController, AccessControl {
@@ -18,112 +21,25 @@ contract Controller is IController, AccessControl {
     EntenToken public immutable TOKEN;
     address public immutable PROTOCOL_COLLECTOR;
 
-    enum StateOp {
-        Set,
-        Add,
-        Sub
-    }
-
-    enum SlotDerivation {
-        Direct,
-        MappingKey,
-        Offset
-    }
-
-    Keycode[] public allModuleKeycodes;
-    Keycode[] public allPolicyKeycodes;
-
-    mapping(Keycode keycode => address module) public moduleForKeycode;
-    mapping(address module => Keycode keycode) public keycodeForModule;
-    mapping(Keycode keycode => bool active) public activeModules;
-
-    mapping(Keycode keycode => address policy) public policyForKeycode;
-    mapping(address policy => Keycode keycode) public keycodeForPolicy;
-    mapping(Keycode keycode => bool active) public activePolicies;
-
-    mapping(Keycode policy => Keycode[] dependencies) public policyDependencies;
-    mapping(Keycode module => mapping(Keycode policy => mapping(bytes4 selector => bool allowed))) public
-        policyPermissions;
-    mapping(Keycode module => bool allowed) public mintPermissions;
-    mapping(Keycode module => mapping(bytes32 namespace => bool allowed)) public statePermissions;
-
-    struct Settlement {
-        address payer;
-        Receipt[] receipts;
-        Credit[] credits;
-        Mint[] mints;
-        StateUpdate[] stateUpdates;
-    }
-
-    struct Receipt {
-        address asset;
-        uint256 amount;
-    }
-
-    struct Credit {
-        address asset;
-        IVault.Bucket to;
-        uint256 amount;
-    }
-
-    struct Mint {
-        address to;
-        uint256 amount;
-    }
-
-    struct StateUpdate {
-        bytes32 namespace;
-        SlotDerivation derivation;
-        bytes32 key;
-        StateOp op;
-        bytes32 data;
-    }
-
-    event ActionExecuted(Action indexed action, address indexed target);
-    event ModuleInstalled(Keycode indexed keycode, address indexed module);
-    event ModuleUpgraded(Keycode indexed keycode, address indexed oldModule, address indexed newModule);
-    event ModuleStatusUpdated(Keycode indexed keycode, address indexed module, bool active);
-    event PolicyInstalled(Keycode indexed keycode, address indexed policy);
-    event PolicyUpgraded(Keycode indexed keycode, address indexed oldPolicy, address indexed newPolicy);
-    event PolicyStatusUpdated(Keycode indexed keycode, address indexed policy, bool active);
-    event PermissionUpdated(Keycode indexed module, Keycode indexed policy, bytes4 indexed selector, bool granted);
-    event MintPermissionUpdated(Keycode indexed module, bool allowed);
-    event StatePermissionUpdated(Keycode indexed module, bytes32 indexed namespace, bool allowed);
-    event SettlementCleared(
-        Keycode indexed module,
-        address indexed payer,
-        uint256 feeBps,
-        uint256 receiptCount,
-        uint256 creditCount,
-        uint256 mintCount,
-        uint256 stateUpdateCount
-    );
-
-    error Controller__ZeroAddress();
-    error Controller__TargetNotAContract(address target);
-    error Controller__InvalidKeycode(Keycode keycode);
-    error Controller__ModuleAlreadyInstalled(Keycode keycode);
-    error Controller__ModuleNotInstalled(Keycode keycode);
-    error Controller__ModuleAlreadyActive(Keycode keycode);
-    error Controller__ModuleNotActive(Keycode keycode);
-    error Controller__InvalidModuleUpgrade(Keycode keycode);
-    error Controller__PolicyAlreadyInstalled(Keycode keycode);
-    error Controller__PolicyNotInstalled(Keycode keycode);
-    error Controller__PolicyAlreadyActive(Keycode keycode);
-    error Controller__PolicyNotActive(Keycode keycode);
-    error Controller__InvalidPolicyUpgrade(Keycode keycode);
-    error Controller__InactivePolicy();
-    error Controller__InactiveModule();
-    error Controller__MintPermissionDenied(Keycode keycode);
-    error Controller__StatePermissionDenied(bytes32 namespace);
-    error Controller__InvalidStateUpdate();
-    error Controller__InvalidSettlement();
-    error Controller__InvalidSettlementAsset();
-    error Controller__InvalidSettlementBucket();
-    error Controller__InvalidMint();
-    error Controller__MintExceedsMaxSupply(uint256 supplyAfter, uint256 maxSupply);
-    error Controller__SettlementOverAllocated(address asset);
-    error Controller__BackingInvariantBreach(address asset, uint256 beforeAmount, uint256 afterAmount);
+    /// @notice Array of all modules currently installed.
+    Keycode[] public allKeycodes;
+    /// @notice Mapping of module address to keycode.
+    mapping(Keycode => Module) public getModuleForKeycode;
+    /// @notice Mapping of keycode to module address.
+    mapping(Module => Keycode) public getKeycodeForModule;
+    /// @notice Mapping of a keycode to all of its policy dependents. Used to efficiently reconfigure policy dependencies.
+    mapping(Keycode => Policy[]) public moduleDependents;
+    /// @notice Helper for module dependent arrays. Prevents the need to loop through array.
+    mapping(Keycode => mapping(Policy => uint256)) public getDependentIndex;
+    /// @notice Module <> Policy Permissions.
+    /// @dev    Keycode -> Policy -> Function Selector -> bool for permission
+    mapping(Keycode => mapping(Policy => mapping(bytes4 => bool))) public modulePermissions;
+    /// @notice List of all active policies
+    Policy[] public activePolicies;
+    /// @notice Helper to get active policy quickly. Prevents need to loop through array.
+    mapping(Policy => uint256) public getPolicyIndex;
+    mapping(Keycode => bool) public mintPermissions;
+    mapping(Keycode => mapping(bytes32 => bool)) public statePermissions;
 
     constructor(address admin, address protocolCollector, address kernel, address vault, address token) {
         if (
@@ -153,58 +69,12 @@ contract Controller is IController, AccessControl {
         _;
     }
 
-    function execute(Action action, address target) external onlyRole(EXECUTOR_ROLE) {
-        if (action == Action.InstallModule) {
-            _installModule(target);
-        } else if (action == Action.UpgradeModule) {
-            _upgradeModule(target);
-        } else if (action == Action.ActivateModule) {
-            _activateModule(target);
-        } else if (action == Action.InstallPolicy) {
-            _installPolicy(target);
-        } else if (action == Action.UpgradePolicy) {
-            _upgradePolicy(target);
-        } else if (action == Action.ActivatePolicy) {
-            _activatePolicy(target);
-        }
-
-        emit ActionExecuted(action, target);
-    }
-
-    function moduleKeycodeAt(uint256 index) external view returns (Keycode) {
-        return allModuleKeycodes[index];
-    }
-
-    function policyKeycodeAt(uint256 index) external view returns (Keycode) {
-        return allPolicyKeycodes[index];
-    }
-
-    function policyDependencyAt(Keycode policy, uint256 index) external view returns (Keycode) {
-        return policyDependencies[policy][index];
-    }
-
-    function setMintPermission(Keycode module, bool allowed) external onlyRole(EXECUTOR_ROLE) {
-        if (moduleForKeycode[module] == address(0)) revert Controller__ModuleNotInstalled(module);
-        if (!activeModules[module]) revert Controller__ModuleNotActive(module);
-
-        mintPermissions[module] = allowed;
-
-        emit MintPermissionUpdated(module, allowed);
-    }
-
-    function setStatePermission(Keycode module, bytes32 namespace, bool allowed) external onlyRole(EXECUTOR_ROLE) {
-        if (moduleForKeycode[module] == address(0)) revert Controller__ModuleNotInstalled(module);
-        if (!activeModules[module]) revert Controller__ModuleNotActive(module);
-        if (namespace == bytes32(0)) revert Controller__InvalidStateUpdate();
-        if (_isProtectedAccountingNamespace(namespace)) revert Controller__StatePermissionDenied(namespace);
-
-        statePermissions[module][namespace] = allowed;
-
-        emit StatePermissionUpdated(module, namespace, allowed);
+    function isPolicyActive(Policy policy_) public view returns (bool) {
+        return activePolicies.length > 0 && address(activePolicies[getPolicyIndex[policy_]]) == address(policy_);
     }
 
     function settle(Settlement calldata settlement) external onlyActiveModule {
-        Keycode moduleKeycode = keycodeForModule[msg.sender];
+        Keycode moduleKeycode = getKeycodeForModule[Module(msg.sender)];
         uint256 feeBps = _feeBps(settlement);
 
         _validateSettlementShape(settlement);
@@ -616,136 +486,17 @@ contract Controller is IController, AccessControl {
         return op == StateOp.Set || op == StateOp.Add || op == StateOp.Sub;
     }
 
-    function _installModule(address target) internal {
-        _ensureContract(target);
-
-        Keycode keycode = IModule(target).keycode();
-        _ensureValidKeycode(keycode);
-
-        if (moduleForKeycode[keycode] != address(0)) revert Controller__ModuleAlreadyInstalled(keycode);
-
-        moduleForKeycode[keycode] = target;
-        keycodeForModule[target] = keycode;
-        allModuleKeycodes.push(keycode);
-
-        IModule(target).init();
-
-        emit ModuleInstalled(keycode, target);
-    }
-
-    function _upgradeModule(address target) internal {
-        _ensureContract(target);
-
-        Keycode keycode = IModule(target).keycode();
-        _ensureValidKeycode(keycode);
-
-        address oldModule = moduleForKeycode[keycode];
-        if (oldModule == address(0) || oldModule == target) revert Controller__InvalidModuleUpgrade(keycode);
-
-        keycodeForModule[oldModule] = Keycode.wrap(bytes5(0));
-        moduleForKeycode[keycode] = target;
-        keycodeForModule[target] = keycode;
-
-        IModule(target).init();
-
-        emit ModuleUpgraded(keycode, oldModule, target);
-    }
-
-    function _activateModule(address target) internal {
-        Keycode keycode = keycodeForModule[target];
-        if (_isEmptyKeycode(keycode)) revert Controller__ModuleNotInstalled(keycode);
-        if (activeModules[keycode]) revert Controller__ModuleAlreadyActive(keycode);
-
-        activeModules[keycode] = true;
-
-        emit ModuleStatusUpdated(keycode, target, true);
-    }
-
-    function _installPolicy(address target) internal {
-        _ensureContract(target);
-
-        Keycode keycode = IPolicy(target).keycode();
-        _ensureValidKeycode(keycode);
-
-        if (policyForKeycode[keycode] != address(0)) revert Controller__PolicyAlreadyInstalled(keycode);
-
-        policyForKeycode[keycode] = target;
-        keycodeForPolicy[target] = keycode;
-        allPolicyKeycodes.push(keycode);
-
-        emit PolicyInstalled(keycode, target);
-    }
-
-    function _upgradePolicy(address target) internal {
-        _ensureContract(target);
-
-        Keycode keycode = IPolicy(target).keycode();
-        _ensureValidKeycode(keycode);
-
-        address oldPolicy = policyForKeycode[keycode];
-        if (oldPolicy == address(0) || oldPolicy == target) revert Controller__InvalidPolicyUpgrade(keycode);
-
-        bool wasActive = activePolicies[keycode];
-        if (wasActive) _deactivatePolicy(oldPolicy);
-
-        keycodeForPolicy[oldPolicy] = Keycode.wrap(bytes5(0));
-        policyForKeycode[keycode] = target;
-        keycodeForPolicy[target] = keycode;
-
-        if (wasActive) _activatePolicy(target);
-
-        emit PolicyUpgraded(keycode, oldPolicy, target);
-    }
-
-    function _activatePolicy(address target) internal {
-        Keycode policyKeycode = keycodeForPolicy[target];
-        if (_isEmptyKeycode(policyKeycode)) revert Controller__PolicyNotInstalled(policyKeycode);
-        if (activePolicies[policyKeycode]) revert Controller__PolicyAlreadyActive(policyKeycode);
-
-        delete policyDependencies[policyKeycode];
-        Keycode[] memory dependencies = IPolicy(target).configureDependencies();
-        for (uint256 i; i < dependencies.length;) {
-            Keycode dependency = dependencies[i];
-            if (moduleForKeycode[dependency] == address(0)) revert Controller__ModuleNotInstalled(dependency);
-            if (!activeModules[dependency]) revert Controller__ModuleNotActive(dependency);
-            policyDependencies[policyKeycode].push(dependency);
-            unchecked {
-                ++i;
-            }
-        }
-
-        Permission[] memory requests = IPolicy(target).requestPermissions();
-        _setPolicyPermissions(policyKeycode, requests, true);
-        activePolicies[policyKeycode] = true;
-
-        emit PolicyStatusUpdated(policyKeycode, target, true);
-    }
-
-    function _deactivatePolicy(address target) internal {
-        Keycode policyKeycode = keycodeForPolicy[target];
-        if (_isEmptyKeycode(policyKeycode)) revert Controller__PolicyNotInstalled(policyKeycode);
-        if (!activePolicies[policyKeycode]) revert Controller__PolicyNotActive(policyKeycode);
-
-        Permission[] memory requests = IPolicy(target).requestPermissions();
-        _setPolicyPermissions(policyKeycode, requests, false);
-
-        delete policyDependencies[policyKeycode];
-        activePolicies[policyKeycode] = false;
-
-        emit PolicyStatusUpdated(policyKeycode, target, false);
-    }
-
-    function _setPolicyPermissions(Keycode policyKeycode, Permission[] memory requests, bool granted) internal {
+    function _setPolicyPermissions(Policy policy, Permissions[] memory requests, bool granted) internal {
+        Keycode policyKeycode = policy.KEYCODE();
         for (uint256 i; i < requests.length;) {
-            Permission memory request = requests[i];
-            if (moduleForKeycode[request.keycode] == address(0)) {
+            Permissions memory request = requests[i];
+            if (address(getModuleForKeycode[request.keycode]) == address(0)) {
                 revert Controller__ModuleNotInstalled(request.keycode);
             }
-            if (!activeModules[request.keycode]) revert Controller__ModuleNotActive(request.keycode);
 
-            policyPermissions[request.keycode][policyKeycode][request.selector] = granted;
+            modulePermissions[request.keycode][policy][request.funcSelector] = granted;
 
-            emit PermissionUpdated(request.keycode, policyKeycode, request.selector, granted);
+            emit PermissionUpdated(request.keycode, policyKeycode, request.funcSelector, granted);
 
             unchecked {
                 ++i;
@@ -754,24 +505,18 @@ contract Controller is IController, AccessControl {
     }
 
     function _onlyActivePolicy() internal view {
-        Keycode keycode = keycodeForPolicy[msg.sender];
-        if (_isEmptyKeycode(keycode) || !activePolicies[keycode]) revert Controller__InactivePolicy();
+        if (!isPolicyActive(Policy(msg.sender))) revert Controller__InactivePolicy();
     }
 
     function _onlyActiveModule() internal view {
-        Keycode keycode = keycodeForModule[msg.sender];
-        if (_isEmptyKeycode(keycode) || !activeModules[keycode]) revert Controller__InactiveModule();
+        Keycode keycode = getKeycodeForModule[Module(msg.sender)];
+        if (_isEmptyKeycode(keycode)) revert Controller__InactiveModule();
     }
 
-    function _ensureContract(address target) internal view {
-        if (target.code.length == 0) revert Controller__TargetNotAContract(target);
-    }
-
-    function _ensureValidKeycode(Keycode keycode) internal pure {
-        bytes5 raw = Keycode.unwrap(keycode);
-        for (uint256 i; i < 5;) {
-            bytes1 char = raw[i];
-            if (char < 0x41 || char > 0x5A) revert Controller__InvalidKeycode(keycode);
+    function _activePolicyForKeycode(Keycode keycode) internal view returns (Policy policy) {
+        for (uint256 i; i < activePolicies.length;) {
+            policy = activePolicies[i];
+            if (Keycode.unwrap(policy.KEYCODE()) == Keycode.unwrap(keycode)) return policy;
             unchecked {
                 ++i;
             }
@@ -791,5 +536,159 @@ contract Controller is IController, AccessControl {
             }
         }
         return result;
+    }
+
+    // @notice Main Controller function. Initiates state changes to controller depending on Action passed in.
+    function executeAction(Actions action, address target) external onlyRole(EXECUTOR_ROLE) {
+        if (action == Actions.InstallModule) {
+            ensureContract(target);
+            ensureValidKeycode(Module(target).KEYCODE());
+            _installModule(Module(target));
+        } else if (action == Actions.UpgradeModule) {
+            ensureContract(target);
+            ensureValidKeycode(Module(target).KEYCODE());
+            _upgradeModule(Module(target));
+        } else if (action == Actions.ActivatePolicy) {
+            ensureContract(target);
+            _activatePolicy(Policy(target));
+        } else if (action == Actions.DeactivatePolicy) {
+            ensureContract(target);
+            _deactivatePolicy(Policy(target));
+        }
+        emit ActionExecuted(action, target);
+    }
+
+    function _installModule(Module newModule) internal {
+        Keycode keycode = newModule.KEYCODE();
+
+        if (address(getModuleForKeycode[keycode]) != address(0)) {
+            revert Controller__ModuleAlreadyInstalled(keycode);
+        }
+
+        getModuleForKeycode[keycode] = newModule;
+        getKeycodeForModule[newModule] = keycode;
+        allKeycodes.push(keycode);
+
+        newModule.INIT();
+    }
+
+    function _upgradeModule(Module newModule) internal {
+        Keycode keycode = newModule.KEYCODE();
+        Module oldModule = getModuleForKeycode[keycode];
+
+        if (address(oldModule) == address(0) || address(oldModule) == address(newModule)) {
+            revert Controller__InvalidModuleUpgrade(keycode);
+        }
+
+        getKeycodeForModule[oldModule] = Keycode.wrap(bytes5(0));
+        getKeycodeForModule[newModule] = keycode;
+        getModuleForKeycode[keycode] = newModule;
+
+        newModule.INIT();
+
+        _reconfigurePolicies(keycode);
+    }
+
+    function _activatePolicy(Policy policy) internal {
+        if (isPolicyActive(policy)) revert Controller__PolicyAlreadyActivated(address(policy));
+
+        // Add policy to list of active policies
+        activePolicies.push(policy);
+        getPolicyIndex[policy] = activePolicies.length - 1;
+
+        // Record module dependencies
+        Keycode[] memory dependencies = policy.configureDependencies();
+        uint256 depLength = dependencies.length;
+
+        for (uint256 i; i < depLength;) {
+            Keycode keycode = dependencies[i];
+
+            moduleDependents[keycode].push(policy);
+            getDependentIndex[keycode][policy] = moduleDependents[keycode].length - 1;
+
+            unchecked {
+                ++i;
+            }
+        }
+
+        // Grant permissions for policy to access restricted module functions
+        Permissions[] memory requests = policy.requestPermissions();
+        _setPolicyPermissions(policy, requests, true);
+    }
+
+    function _deactivatePolicy(Policy policy) internal {
+        if (!isPolicyActive(policy)) revert Controller__PolicyNotActivated(address(policy));
+
+        // Revoke permissions
+        Permissions[] memory requests = policy.requestPermissions();
+        _setPolicyPermissions(policy, requests, false);
+
+        // Remove policy from all policy data structures
+        uint256 idx = getPolicyIndex[policy];
+        Policy lastPolicy = activePolicies[activePolicies.length - 1];
+
+        activePolicies[idx] = lastPolicy;
+        activePolicies.pop();
+        getPolicyIndex[lastPolicy] = idx;
+        delete getPolicyIndex[policy];
+
+        // Remove policy from module dependents
+        _pruneFromDependents(policy);
+    }
+
+    function _reconfigurePolicies(Keycode keycode) internal {
+        Policy[] memory dependents = moduleDependents[keycode];
+        uint256 depLength = dependents.length;
+
+        for (uint256 i; i < depLength;) {
+            dependents[i].configureDependencies();
+
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    function _pruneFromDependents(Policy policy) internal {
+        Keycode[] memory dependencies = policy.configureDependencies();
+        uint256 depcLength = dependencies.length;
+
+        for (uint256 i; i < depcLength;) {
+            Keycode keycode = dependencies[i];
+            Policy[] storage dependents = moduleDependents[keycode];
+
+            uint256 origIndex = getDependentIndex[keycode][policy];
+            Policy lastPolicy = dependents[dependents.length - 1];
+
+            // Swap with last and pop
+            dependents[origIndex] = lastPolicy;
+            dependents.pop();
+
+            // Record new index and delete deactivated policy index
+            getDependentIndex[keycode][lastPolicy] = origIndex;
+            delete getDependentIndex[keycode][policy];
+
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    function setMintPermission(Keycode module, bool allowed) external onlyRole(EXECUTOR_ROLE) {
+        if (address(getModuleForKeycode[module]) == address(0)) revert Controller__ModuleNotInstalled(module);
+
+        mintPermissions[module] = allowed;
+
+        emit MintPermissionUpdated(module, allowed);
+    }
+
+    function setStatePermission(Keycode module, bytes32 namespace, bool allowed) external onlyRole(EXECUTOR_ROLE) {
+        if (address(getModuleForKeycode[module]) == address(0)) revert Controller__ModuleNotInstalled(module);
+        if (namespace == bytes32(0)) revert Controller__InvalidStateUpdate();
+        if (_isProtectedAccountingNamespace(namespace)) revert Controller__StatePermissionDenied(namespace);
+
+        statePermissions[module][namespace] = allowed;
+
+        emit StatePermissionUpdated(module, namespace, allowed);
     }
 }

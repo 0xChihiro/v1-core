@@ -1,25 +1,22 @@
 ///SPDX-License-Identifier: MIT
 pragma solidity 0.8.34;
 
-import {IController, Keycode} from "./interfaces/IController.sol";
+import {IController} from "./interfaces/IController.sol";
+import {ControllerAdapter} from "./ControllerAdapter.sol";
+import {Keycode} from "./Utils.sol";
+import {Policy} from "./Policy.sol";
 
-abstract contract Module {
-    IController public immutable CONTROLLER;
-
-    error Module__OnlyController();
-
-    modifier onlyController() {
-        _onlyController();
+abstract contract Module is ControllerAdapter {
+    error Module__PolicyNotPermitted(address policy);
+    modifier permissioned() {
+        if (msg.sender == address(CONTROLLER) || !CONTROLLER.modulePermissions(KEYCODE(), Policy(msg.sender), msg.sig))
+        {
+            revert Module__PolicyNotPermitted(msg.sender);
+        }
         _;
     }
 
-    function _onlyController() internal view {
-        if (msg.sender != address(CONTROLLER)) revert Module__OnlyController();
-    }
-
-    constructor(address controller) {
-        CONTROLLER = IController(controller);
-    }
+    constructor(address controller) ControllerAdapter(controller) {}
 
     /// @notice 5 byte identifier for a module.
     function KEYCODE() public pure virtual returns (Keycode) {}
