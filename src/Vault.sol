@@ -16,6 +16,7 @@ contract Vault is IVault {
 
     // ---------------------- EVENTS -------------------------------------------- \\
     event SurplusSynced(address indexed asset, Bucket indexed bucket, uint256 amount);
+    event Vault__HandleAccounting(TransferCall[] calls);
 
     // ---------------------- ERRORS -------------------------------------------- \\
     error Vault__BackingCallInvalid();
@@ -102,6 +103,7 @@ contract Vault is IVault {
                 ++i;
             }
         }
+        emit Vault__HandleAccounting(calls);
     }
 
     function credit(address asset, uint256 amount, Bucket from, Bucket to) external onlyController {

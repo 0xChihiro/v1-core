@@ -15,9 +15,9 @@ contract Controller is Dispatch, AccessControl {
 
     /// @notice Array of all modules currently installed.
     Keycode[] public allKeycodes;
-    /// @notice Mapping of module address to keycode.
-    mapping(Keycode => Module) public getModuleForKeycode;
     /// @notice Mapping of keycode to module address.
+    mapping(Keycode => Module) internal _moduleForKeycode;
+    /// @notice Mapping of module address to keycode.
     mapping(Module => Keycode) public getKeycodeForModule;
     /// @notice Mapping of a keycode to all of its policy dependents. Used to efficiently reconfigure policy dependencies.
     mapping(Keycode => Policy[]) public moduleDependents;
@@ -25,7 +25,7 @@ contract Controller is Dispatch, AccessControl {
     mapping(Keycode => mapping(Policy => uint256)) public getDependentIndex;
     /// @notice Module <> Policy Permissions.
     /// @dev    Keycode -> Policy -> Function Selector -> bool for permission
-    mapping(Keycode => mapping(Policy => mapping(bytes4 => bool))) public modulePermissions;
+    mapping(Keycode => mapping(Policy => mapping(bytes4 => bool))) internal _modulePermissions;
     /// @notice List of all active policies
     Policy[] public activePolicies;
     /// @notice Helper to get active policy quickly. Prevents need to loop through array.
@@ -46,7 +46,19 @@ contract Controller is Dispatch, AccessControl {
         _grantRole(EXECUTOR_ROLE, admin);
     }
 
-    function isPolicyActive(Policy policy_) public view returns (bool) {
+    function getModuleForKeycode(Keycode keycode) public view override returns (address) {
+        return address(_moduleForKeycode[keycode]);
+    }
+
+    function modulePermissions(Keycode keycode, address policy, bytes4 selector) public view override returns (bool) {
+        return _modulePermissions[keycode][Policy(policy)][selector];
+    }
+
+    function isPolicyActive(address policy_) public view override returns (bool) {
+        return _isPolicyActive(Policy(policy_));
+    }
+
+    function _isPolicyActive(Policy policy_) internal view returns (bool) {
         return activePolicies.length > 0 && address(activePolicies[getPolicyIndex[policy_]]) == address(policy_);
     }
 
@@ -69,11 +81,11 @@ contract Controller is Dispatch, AccessControl {
         Keycode policyKeycode = policy.KEYCODE();
         for (uint256 i; i < requests.length;) {
             Permissions memory request = requests[i];
-            if (address(getModuleForKeycode[request.keycode]) == address(0)) {
+            if (address(_moduleForKeycode[request.keycode]) == address(0)) {
                 revert Controller__ModuleNotInstalled(request.keycode);
             }
 
-            modulePermissions[request.keycode][policy][request.funcSelector] = granted;
+            _modulePermissions[request.keycode][policy][request.funcSelector] = granted;
 
             emit PermissionUpdated(request.keycode, policyKeycode, request.funcSelector, granted);
 
@@ -110,11 +122,11 @@ contract Controller is Dispatch, AccessControl {
     function _installModule(Module newModule) internal {
         Keycode keycode = newModule.KEYCODE();
 
-        if (address(getModuleForKeycode[keycode]) != address(0)) {
+        if (address(_moduleForKeycode[keycode]) != address(0)) {
             revert Controller__ModuleAlreadyInstalled(keycode);
         }
 
-        getModuleForKeycode[keycode] = newModule;
+        _moduleForKeycode[keycode] = newModule;
         getKeycodeForModule[newModule] = keycode;
         allKeycodes.push(keycode);
 
@@ -123,7 +135,7 @@ contract Controller is Dispatch, AccessControl {
 
     function _upgradeModule(Module newModule) internal {
         Keycode keycode = newModule.KEYCODE();
-        Module oldModule = getModuleForKeycode[keycode];
+        Module oldModule = _moduleForKeycode[keycode];
 
         if (address(oldModule) == address(0) || address(oldModule) == address(newModule)) {
             revert Controller__InvalidModuleUpgrade(keycode);
@@ -131,7 +143,7 @@ contract Controller is Dispatch, AccessControl {
 
         getKeycodeForModule[oldModule] = Keycode.wrap(bytes5(0));
         getKeycodeForModule[newModule] = keycode;
-        getModuleForKeycode[keycode] = newModule;
+        _moduleForKeycode[keycode] = newModule;
 
         newModule.INIT();
 
@@ -139,7 +151,7 @@ contract Controller is Dispatch, AccessControl {
     }
 
     function _activatePolicy(Policy policy) internal {
-        if (isPolicyActive(policy)) revert Controller__PolicyAlreadyActivated(address(policy));
+        if (_isPolicyActive(policy)) revert Controller__PolicyAlreadyActivated(address(policy));
 
         // Add policy to list of active policies
         activePolicies.push(policy);
@@ -166,7 +178,7 @@ contract Controller is Dispatch, AccessControl {
     }
 
     function _deactivatePolicy(Policy policy) internal {
-        if (!isPolicyActive(policy)) revert Controller__PolicyNotActivated(address(policy));
+        if (!_isPolicyActive(policy)) revert Controller__PolicyNotActivated(address(policy));
 
         // Revoke permissions
         Permissions[] memory requests = policy.requestPermissions();
@@ -224,7 +236,7 @@ contract Controller is Dispatch, AccessControl {
     }
 
     function setMintPermission(Keycode module, bool allowed) external onlyRole(EXECUTOR_ROLE) {
-        if (address(getModuleForKeycode[module]) == address(0)) revert Controller__ModuleNotInstalled(module);
+        if (address(_moduleForKeycode[module]) == address(0)) revert Controller__ModuleNotInstalled(module);
 
         mintPermissions[module] = allowed;
 
@@ -232,7 +244,7 @@ contract Controller is Dispatch, AccessControl {
     }
 
     function setStatePermission(Keycode module, bytes32 namespace, bool allowed) external onlyRole(EXECUTOR_ROLE) {
-        if (address(getModuleForKeycode[module]) == address(0)) revert Controller__ModuleNotInstalled(module);
+        if (address(_moduleForKeycode[module]) == address(0)) revert Controller__ModuleNotInstalled(module);
         if (namespace == bytes32(0)) revert Controller__InvalidStateUpdate();
         if (_isProtectedAccountingNamespace(namespace)) revert Controller__StatePermissionDenied(namespace);
 

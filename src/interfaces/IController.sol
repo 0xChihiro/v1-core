@@ -2,8 +2,7 @@
 pragma solidity 0.8.34;
 
 import {Keycode, Actions} from "../Utils.sol";
-import {Module} from "../Module.sol";
-import {Policy} from "../Policy.sol";
+import {IVault} from "./IVault.sol";
 
 interface IController {
     enum Op {
@@ -56,9 +55,10 @@ interface IController {
     }
 
     function settle(Settlement[] calldata) external;
-    function getModuleForKeycode(Keycode) external view returns (Module);
-    function modulePermissions(Keycode, Policy, bytes4) external view returns (bool);
-    function isPolicyActive(Policy) external view returns (bool);
+    function sync(address, IVault.Bucket) external;
+    function getModuleForKeycode(Keycode) external view returns (address);
+    function modulePermissions(Keycode, address, bytes4) external view returns (bool);
+    function isPolicyActive(address) external view returns (bool);
 
     event ActionExecuted(Actions indexed action, address indexed target);
     event PermissionUpdated(Keycode indexed module, Keycode indexed policy, bytes4 indexed selector, bool granted);

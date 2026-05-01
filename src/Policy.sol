@@ -15,12 +15,12 @@ abstract contract Policy is ControllerAdapter {
 
     /// @notice Easily accessible indicator for if a policy is activated or not.
     function isActive() external view returns (bool) {
-        return CONTROLLER.isPolicyActive(this);
+        return CONTROLLER.isPolicyActive(address(this));
     }
 
     /// @notice Function to grab module address from a given keycode.
     function getModuleAddress(Keycode keycode_) internal view returns (address) {
-        address moduleForKeycode = address(CONTROLLER.getModuleForKeycode(keycode_));
+        address moduleForKeycode = CONTROLLER.getModuleForKeycode(keycode_);
         if (moduleForKeycode == address(0)) revert Policy__ModuleDoesNotExist(keycode_);
         return moduleForKeycode;
     }

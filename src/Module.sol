@@ -1,16 +1,13 @@
 ///SPDX-License-Identifier: MIT
 pragma solidity 0.8.34;
 
-import {IController} from "./interfaces/IController.sol";
 import {ControllerAdapter} from "./ControllerAdapter.sol";
 import {Keycode} from "./Utils.sol";
-import {Policy} from "./Policy.sol";
 
 abstract contract Module is ControllerAdapter {
     error Module__PolicyNotPermitted(address policy);
     modifier permissioned() {
-        if (msg.sender == address(CONTROLLER) || !CONTROLLER.modulePermissions(KEYCODE(), Policy(msg.sender), msg.sig))
-        {
+        if (msg.sender == address(CONTROLLER) || !CONTROLLER.modulePermissions(KEYCODE(), msg.sender, msg.sig)) {
             revert Module__PolicyNotPermitted(msg.sender);
         }
         _;
