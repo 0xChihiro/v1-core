@@ -19,7 +19,6 @@ contract Vault is IVault {
     event Vault__HandleAccounting(TransferCall[] calls);
 
     // ---------------------- ERRORS -------------------------------------------- \\
-    error Vault__BackingCallInvalid();
     error Vault__CannotLowerBacking();
     error Vault__InvalidBucket();
     error Vault__MisconfiguredSetup();
@@ -107,7 +106,9 @@ contract Vault is IVault {
     }
 
     function credit(address asset, uint256 amount, Bucket from, Bucket to) external onlyController {
-        if (from == Bucket.Redeem || from == Bucket.Borrow) revert Vault__CannotLowerBacking();
+        if (from == Bucket.Redeem) revert Vault__CannotLowerBacking();
+        _ensureCoreBucket(from);
+        _ensureCoreBucket(to);
         KERNEL.sub(_bucketSlot(from, asset), bytes32(amount));
         KERNEL.add(_bucketSlot(to, asset), bytes32(amount));
     }
@@ -116,7 +117,9 @@ contract Vault is IVault {
         IKernel.KernelCall[] memory subCalls = new IKernel.KernelCall[](calls.length);
         IKernel.KernelCall[] memory addCalls = new IKernel.KernelCall[](calls.length);
         for (uint256 i = 0; i < calls.length; i++) {
-            if (calls[i].from == Bucket.Redeem || calls[i].from == Bucket.Borrow) revert Vault__CannotLowerBacking();
+            if (calls[i].from == Bucket.Redeem) revert Vault__CannotLowerBacking();
+            _ensureCoreBucket(calls[i].from);
+            _ensureCoreBucket(calls[i].to);
             subCalls[i] =
                 IKernel.KernelCall({slot: _bucketSlot(calls[i].from, calls[i].asset), data: bytes32(calls[i].amount)});
             addCalls[i] =
@@ -127,6 +130,8 @@ contract Vault is IVault {
     }
 
     function syncSurplus(address asset, Bucket bucket) external onlyController {
+        _ensureCoreBucket(bucket);
+
         uint256 actualBalance = IERC20(asset).balanceOf(address(this));
         uint256 accounted = _accountedBalance(asset);
 
@@ -167,6 +172,12 @@ contract Vault is IVault {
 
     function _teamAmountSlot(address asset) internal pure returns (bytes32 slot) {
         return _bucketSlot(Bucket.Team, asset);
+    }
+
+    function _ensureCoreBucket(Bucket bucket) internal pure {
+        if (bucket != Bucket.Redeem && bucket != Bucket.Treasury && bucket != Bucket.Team) {
+            revert Vault__InvalidBucket();
+        }
     }
 
     function _bucketSlot(Bucket bucket, address asset) internal pure returns (bytes32 slot) {

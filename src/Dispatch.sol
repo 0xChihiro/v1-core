@@ -107,9 +107,16 @@ abstract contract Dispatch is IController {
             if (transition == uint8(StateTransitions.Withdraw)) {
                 transferCalls =
                     _buildWithdrawCalls(settlement.receipts, settlement.payer, settlement.amount, address(TOKEN));
-            } else {
+            } else if (transition == uint8(StateTransitions.Burn)) {
                 if (settlement.receipts.length > 0) revert Controller__TransfersDuringBurn();
                 TOKEN.burnFrom(settlement.payer, settlement.amount);
+            } else if (transition == uint8(StateTransitions.StateUpdate)) {
+                if (settlement.receipts.length > 0) revert Controller__StateUpdatesOnly();
+                if (settlement.singleStateUpdates.length == 0 && settlement.multiStateUpdates.length == 0) {
+                    revert Controller__NoUpdatesGiven();
+                }
+            } else {
+                revert Controller__InvalidStateUpdate();
             }
         }
     }

@@ -26,7 +26,8 @@ interface IController {
         Claim,
         Deposit,
         Withdraw,
-        Burn
+        Burn,
+        StateUpdate
     }
 
     struct Settlement {
@@ -65,6 +66,8 @@ interface IController {
     event MintPermissionUpdated(Keycode indexed module, bool allowed);
     event StatePermissionUpdated(Keycode indexed module, bytes32 indexed namespace, bool allowed);
 
+    error Controller__StateUpdatesOnly();
+    error Controller__NoUpdatesGiven();
     error Controller__DifferentBackingLengths();
     error Controller__ComparingDifferentAssets();
     error Controller__BackingWentDown();
