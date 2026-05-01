@@ -23,6 +23,7 @@ interface IControllerDeploymentView {
     function TOKEN() external view returns (address);
     function PROTOCOL_COLLECTOR() external view returns (address);
     function EXECUTOR_ROLE() external view returns (bytes32);
+    function MINT_PERMISSION_ROLE() external view returns (bytes32);
     function hasRole(bytes32 role, address account) external view returns (bool);
 }
 
@@ -132,6 +133,10 @@ contract ControllerFactory {
         }
         if (!IControllerDeploymentView(deployment.controller)
                 .hasRole(IControllerDeploymentView(deployment.controller).EXECUTOR_ROLE(), admin)) {
+            revert ControllerFactory__InvalidDeployment();
+        }
+        if (!IControllerDeploymentView(deployment.controller)
+                .hasRole(IControllerDeploymentView(deployment.controller).MINT_PERMISSION_ROLE(), admin)) {
             revert ControllerFactory__InvalidDeployment();
         }
         if (IKernelDeploymentView(deployment.kernel).CONTROLLER() != deployment.controller) {

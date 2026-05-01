@@ -19,7 +19,6 @@ abstract contract Dispatch is IController {
     address public immutable PROTOCOL_COLLECTOR;
 
     mapping(Keycode => bool) public mintPermissions;
-    mapping(Keycode => mapping(bytes32 => bool)) public statePermissions;
 
     constructor(address protocolCollector, address kernel, address vault, address token) {
         PROTOCOL_COLLECTOR = protocolCollector;
@@ -30,7 +29,6 @@ abstract contract Dispatch is IController {
 
     function _getModuleKeycode(Module module_) internal view virtual returns (Keycode);
 
-    // New to add a way for users to claim collateral back
     function settle(Settlement[] calldata settlements) external {
         Keycode moduleKeycode = _getModuleKeycode(Module(msg.sender));
         if (Keycode.unwrap(moduleKeycode) == bytes5(0)) revert Controller__InactiveModule();
@@ -441,6 +439,10 @@ abstract contract Dispatch is IController {
 
     function _backingPerToken() internal view returns (Backing[] memory backing) {
         uint256 totalSupply = TOKEN.totalSupply();
+        if (totalSupply == 0) {
+            backing = new Backing[](0);
+            return backing;
+        }
         uint256 assetsLength = uint256(KERNEL.viewData(Slots.ASSETS_LENGTH_SLOT));
         bytes memory rawAssets = KERNEL.viewData(Slots.ASSETS_BASE_SLOT, assetsLength);
         address[] memory assets;
@@ -473,6 +475,7 @@ abstract contract Dispatch is IController {
     }
 
     function _validateBacking(Backing[] memory start, Backing[] memory end) internal pure {
+        if (start.length == 0) return;
         if (start.length != end.length) revert Controller__DifferentBackingLengths();
         for (uint256 i = 0; i < start.length;) {
             if (start[i].asset != end[i].asset) revert Controller__ComparingDifferentAssets();

@@ -7,11 +7,11 @@ import {Keycode, Permissions, Actions, ensureContract, ensureValidKeycode} from 
 import {IVault} from "./interfaces/IVault.sol";
 import {Module} from "./Module.sol";
 import {Policy} from "./Policy.sol";
-import {Slots} from "./libraries/Slots.sol";
 
 contract Controller is Dispatch, AccessControl {
     bytes32 public constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
     bytes32 public constant CREDITOR_ROLE = keccak256("CREDITOR_ROLE");
+    bytes32 public constant MINT_PERMISSION_ROLE = keccak256("MINT_PERMISSION_ROLE");
 
     /// @notice Array of all modules currently installed.
     Keycode[] public allKeycodes;
@@ -44,6 +44,7 @@ contract Controller is Dispatch, AccessControl {
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(EXECUTOR_ROLE, admin);
+        _grantRole(MINT_PERMISSION_ROLE, admin);
     }
 
     function getModuleForKeycode(Keycode keycode) public view override returns (address) {
@@ -159,6 +160,7 @@ contract Controller is Dispatch, AccessControl {
 
         // Record module dependencies
         Keycode[] memory dependencies = policy.configureDependencies();
+        _validateDependencies(dependencies);
         uint256 depLength = dependencies.length;
 
         for (uint256 i; i < depLength;) {
@@ -212,6 +214,7 @@ contract Controller is Dispatch, AccessControl {
 
     function _pruneFromDependents(Policy policy) internal {
         Keycode[] memory dependencies = policy.configureDependencies();
+        _validateDependencies(dependencies);
         uint256 depcLength = dependencies.length;
 
         for (uint256 i; i < depcLength;) {
@@ -235,27 +238,37 @@ contract Controller is Dispatch, AccessControl {
         }
     }
 
-    function setMintPermission(Keycode module, bool allowed) external onlyRole(EXECUTOR_ROLE) {
+    function _validateDependencies(Keycode[] memory dependencies) internal view {
+        uint256 depLength = dependencies.length;
+
+        for (uint256 i; i < depLength;) {
+            Keycode dependency = dependencies[i];
+
+            if (address(_moduleForKeycode[dependency]) == address(0)) {
+                revert Controller__ModuleNotInstalled(dependency);
+            }
+
+            for (uint256 j = i + 1; j < depLength;) {
+                if (Keycode.unwrap(dependency) == Keycode.unwrap(dependencies[j])) {
+                    revert Controller__DuplicateDependency(dependency);
+                }
+
+                unchecked {
+                    ++j;
+                }
+            }
+
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    function setMintPermission(Keycode module, bool allowed) external onlyRole(MINT_PERMISSION_ROLE) {
         if (address(_moduleForKeycode[module]) == address(0)) revert Controller__ModuleNotInstalled(module);
 
         mintPermissions[module] = allowed;
 
         emit MintPermissionUpdated(module, allowed);
-    }
-
-    function setStatePermission(Keycode module, bytes32 namespace, bool allowed) external onlyRole(EXECUTOR_ROLE) {
-        if (address(_moduleForKeycode[module]) == address(0)) revert Controller__ModuleNotInstalled(module);
-        if (namespace == bytes32(0)) revert Controller__InvalidStateUpdate();
-        if (_isProtectedAccountingNamespace(namespace)) revert Controller__StatePermissionDenied(namespace);
-
-        statePermissions[module][namespace] = allowed;
-
-        emit StatePermissionUpdated(module, namespace, allowed);
-    }
-
-    function _isProtectedAccountingNamespace(bytes32 namespace) internal pure returns (bool) {
-        return namespace == Slots.BACKING_AMOUNT_SLOT || namespace == Slots.TREASURY_AMOUNT_SLOT
-            || namespace == Slots.TEAM_AMOUNT_SLOT || namespace == Slots.ASSET_TOTAL_BORROWED_BASE_SLOT
-            || namespace == Slots.TOTAL_COLLATERL_SLOT;
     }
 }

@@ -64,7 +64,6 @@ interface IController {
     event ActionExecuted(Actions indexed action, address indexed target);
     event PermissionUpdated(Keycode indexed module, Keycode indexed policy, bytes4 indexed selector, bool granted);
     event MintPermissionUpdated(Keycode indexed module, bool allowed);
-    event StatePermissionUpdated(Keycode indexed module, bytes32 indexed namespace, bool allowed);
 
     error Controller__StateUpdatesOnly();
     error Controller__NoUpdatesGiven();
@@ -79,8 +78,8 @@ interface IController {
     error Controller__InvalidModuleUpgrade(Keycode keycode);
     error Controller__PolicyAlreadyActivated(address);
     error Controller__PolicyNotActivated(address);
+    error Controller__DuplicateDependency(Keycode keycode);
     error Controller__InactiveModule();
     error Controller__MintPermissionDenied();
-    error Controller__StatePermissionDenied(bytes32 namespace);
     error Controller__InvalidStateUpdate();
 }

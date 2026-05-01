@@ -50,6 +50,7 @@ contract ControllerFactoryTest is Test {
         assertEq(controller.PROTOCOL_COLLECTOR(), protocolCollector);
         assertTrue(controller.hasRole(controller.DEFAULT_ADMIN_ROLE(), admin));
         assertTrue(controller.hasRole(controller.EXECUTOR_ROLE(), admin));
+        assertTrue(controller.hasRole(controller.MINT_PERMISSION_ROLE(), admin));
 
         assertEq(kernel.CONTROLLER(), deployed.controller);
         assertEq(kernel.VAULT(), deployed.vault);
