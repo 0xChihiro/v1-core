@@ -23,13 +23,4 @@ library Slots {
     bytes32 internal constant USER_POSITION_BASE_SLOT = keccak256("enten.borrow.user.position");
     bytes32 internal constant ASSET_TOTAL_BORROWED_BASE_SLOT = keccak256("enten.borrow.asset.borrowed");
     bytes32 internal constant TOTAL_COLLATERL_SLOT = keccak256("enten.borrow.total.collateral");
-
-    // Auction Slots
-    bytes32 internal constant LOT_SIZE_SLOT = keccak256("enten.auction.lot.size");
-    bytes32 internal constant MAX_SCALAR_SLOT = keccak256("enten.auction.max.scalar");
-    bytes32 internal constant MIN_SCALAR_SLOT = keccak256("enten.auction.min.scalar");
-    bytes32 internal constant EPOCH_LENGTH_SLOT = keccak256("enten.auction.epoch.length");
-    bytes32 internal constant EPOCH_ID_SLOT = keccak256("enten.aucion.epoch.id");
-
-    // Curve Slots
 }
