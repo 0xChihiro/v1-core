@@ -3,18 +3,15 @@ pragma solidity 0.8.34;
 
 import {Script} from "forge-std/Script.sol";
 import {console} from "forge-std/console.sol";
-import {ControllerFactory} from "../src/factories/ControllerFactory.sol";
 import {Controller} from "../src/Controller.sol";
+import {ControllerFactory} from "../src/factories/ControllerFactory.sol";
+import {CreationCodeStore} from "../src/factories/CreationCodeStore.sol";
+import {IControllerFactory} from "../src/interfaces/IControllerFactory.sol";
 import {Kernel} from "../src/Kernel.sol";
-import {Vault} from "../src/Vault.sol";
 import {Token} from "../src/Token.sol";
+import {Vault} from "../src/Vault.sol";
 
 contract LaunchScript is Script {
-    bytes constant controllerCode = type(Controller).creationCode;
-    bytes constant tokenCode = type(Token).creationCode;
-    bytes constant vaultCode = type(Vault).creationCode;
-    bytes constant kernelCode = type(Kernel).creationCode;
-
     /// Not the actual controller factory address. Will be replaced once the factory is live.
     // ControllerFactory constant factory = ControllerFactory(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
     /// Change admin address to the address you want the admin address to be.
@@ -22,27 +19,28 @@ contract LaunchScript is Script {
 
     function run() public {
         vm.startBroadcast();
-        ControllerFactory factory = new ControllerFactory(address(42));
+        IControllerFactory.CreationCodeStores memory codeStores = IControllerFactory.CreationCodeStores({
+            controller: address(new CreationCodeStore(type(Controller).creationCode)),
+            kernel: address(new CreationCodeStore(type(Kernel).creationCode)),
+            vault: address(new CreationCodeStore(type(Vault).creationCode)),
+            token: address(new CreationCodeStore(type(Token).creationCode))
+        });
+
+        ControllerFactory factory = new ControllerFactory(address(42), codeStores);
 
         bytes32 salt = keccak256("enten.controller.launch");
-        ControllerFactory.Deployment memory predicted = factory.predictDeployment(msg.sender, salt);
 
         /// Change The necessary constructor inputs to what you need them to be.
-        ControllerFactory.CreationCode memory creationCode = ControllerFactory.CreationCode({
-            controller: abi.encodePacked(
-                controllerCode,
-                abi.encode(admin, factory.PROTOCOL_COLLECTOR(), predicted.kernel, predicted.vault, predicted.token)
-            ),
-            kernel: abi.encodePacked(kernelCode, abi.encode(predicted.controller, predicted.vault)),
-            vault: abi.encodePacked(vaultCode, abi.encode(predicted.controller, predicted.kernel)),
-            /// Update to your specific token data.
-            token: abi.encodePacked(
-                tokenCode, abi.encode("Enten", "ENTEN", predicted.controller, address(0), 0, 10_000_000e18)
-            )
+        IControllerFactory.LaunchConfig memory config = IControllerFactory.LaunchConfig({
+            tokenName: "Enten",
+            tokenSymbol: "ENTEN",
+            preMineAddress: address(0),
+            preMineAmount: 0,
+            maxSupply: 10_000_000e18
         });
 
         /// Controller Factory Validates deployments to ensure things were done properly.
-        ControllerFactory.Deployment memory deployments = factory.launchController(admin, salt, creationCode);
+        IControllerFactory.Deployment memory deployments = factory.launchController(admin, salt, config);
 
         vm.stopBroadcast();
 
