@@ -304,6 +304,20 @@ contract CoreTest is Test {
         assertEq(uint256(kernel.viewData(duplicateSlot)), type(uint256).max - 5);
     }
 
+    function testAddExactBoundaryToMaxSucceeds() public {
+        bytes32 slot = keccak256("exact add boundary slot");
+        uint256 startingValue = 125;
+        uint256 delta = type(uint256).max - startingValue;
+
+        vm.prank(controller);
+        kernel.updateState(slot, bytes32(startingValue));
+
+        vm.prank(vault);
+        kernel.add(slot, bytes32(delta));
+
+        assertEq(uint256(kernel.viewData(slot)), type(uint256).max);
+    }
+
     /*
         1. Ensure that the call can not be completed if the caller is not the controller or account writer.
         2. Ensure it works for the controller.
@@ -467,6 +481,19 @@ contract CoreTest is Test {
         kernel.sub(calls);
 
         assertEq(uint256(kernel.viewData(duplicateSlot)), 10);
+    }
+
+    function testSubExactBoundaryToZeroSucceeds() public {
+        bytes32 slot = keccak256("exact sub boundary slot");
+        uint256 startingValue = 125;
+
+        vm.prank(controller);
+        kernel.updateState(slot, bytes32(startingValue));
+
+        vm.prank(vault);
+        kernel.sub(slot, bytes32(startingValue));
+
+        assertEq(uint256(kernel.viewData(slot)), 0);
     }
 
     /*
@@ -682,5 +709,29 @@ contract CoreTest is Test {
 
         assertEq(contiguousData.length, 0);
         assertEq(arbitraryData.length, 0);
+    }
+
+    function testEmptyMutationArraysAreNoOps() public {
+        bytes32 existingSlot = keccak256("empty mutation existing slot");
+        bytes32 untouchedSlot = keccak256("empty mutation untouched slot");
+        bytes32 existingValue = bytes32(uint256(123));
+
+        vm.prank(controller);
+        kernel.updateState(existingSlot, existingValue);
+
+        IKernel.KernelCall[] memory calls = new IKernel.KernelCall[](0);
+
+        vm.prank(controller);
+        kernel.updateState(calls);
+
+        vm.prank(vault);
+        kernel.add(calls);
+
+        vm.prank(vault);
+        kernel.sub(calls);
+
+        assertEq(kernel.viewData(existingSlot), existingValue);
+        assertEq(kernel.viewData(untouchedSlot), bytes32(0));
+        assertEq(kernel.accountingWriter(), vault);
     }
 }
