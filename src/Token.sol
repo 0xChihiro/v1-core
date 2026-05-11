@@ -1,10 +1,10 @@
 ///SPDX-License-Identifier: MIT
 pragma solidity 0.8.34;
 
-import {IEntenToken} from "./interfaces/IEntenToken.sol";
 import {ERC20} from "openzeppelin/contracts/token/ERC20/ERC20.sol";
+import {IToken} from "./interfaces/IToken.sol";
 
-contract EntenToken is ERC20, IEntenToken {
+contract Token is ERC20, IToken {
     address public immutable CONTROLLER;
     uint256 public immutable MAX_SUPPLY;
 

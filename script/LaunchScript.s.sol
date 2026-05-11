@@ -7,11 +7,11 @@ import {ControllerFactory} from "../src/factories/ControllerFactory.sol";
 import {Controller} from "../src/Controller.sol";
 import {Kernel} from "../src/Kernel.sol";
 import {Vault} from "../src/Vault.sol";
-import {EntenToken} from "../src/EntenToken.sol";
+import {Token} from "../src/Token.sol";
 
 contract LaunchScript is Script {
     bytes constant controllerCode = type(Controller).creationCode;
-    bytes constant tokenCode = type(EntenToken).creationCode;
+    bytes constant tokenCode = type(Token).creationCode;
     bytes constant vaultCode = type(Vault).creationCode;
     bytes constant kernelCode = type(Kernel).creationCode;
 

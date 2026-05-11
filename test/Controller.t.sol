@@ -2,7 +2,7 @@
 pragma solidity 0.8.34;
 
 import {Controller} from "../src/Controller.sol";
-import {EntenToken} from "../src/EntenToken.sol";
+import {Token} from "../src/Token.sol";
 import {Kernel} from "../src/Kernel.sol";
 import {Module} from "../src/Module.sol";
 import {Policy} from "../src/Policy.sol";
@@ -206,7 +206,7 @@ contract ControllerTest is Test {
     Controller controller;
     Kernel kernel;
     Vault vault;
-    EntenToken token;
+    Token token;
     SettlementTestModule module;
     ERC20Mock asset;
     ERC20Mock secondAsset;
@@ -260,7 +260,7 @@ contract ControllerTest is Test {
 
         kernel = new Kernel(predictedController, predictedVault);
         vault = new Vault(predictedController, predictedKernel);
-        token = new EntenToken("Enten", "ENTEN", predictedController, user, INITIAL_SUPPLY, type(uint256).max);
+        token = new Token("Enten", "ENTEN", predictedController, user, INITIAL_SUPPLY, type(uint256).max);
         controller = new Controller(admin, protocolCollector, predictedKernel, predictedVault, predictedToken);
 
         module = new SettlementTestModule(address(controller));

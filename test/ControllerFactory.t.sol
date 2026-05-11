@@ -2,7 +2,7 @@
 pragma solidity 0.8.34;
 
 import {Controller} from "../src/Controller.sol";
-import {EntenToken} from "../src/EntenToken.sol";
+import {Token} from "../src/Token.sol";
 import {Kernel} from "../src/Kernel.sol";
 import {Vault} from "../src/Vault.sol";
 import {ControllerFactory} from "../src/factories/ControllerFactory.sol";
@@ -26,7 +26,7 @@ contract ControllerFactoryTest is Test {
             kernel: abi.encodePacked(type(Kernel).creationCode, abi.encode(predicted.controller, predicted.vault)),
             vault: abi.encodePacked(type(Vault).creationCode, abi.encode(predicted.controller, predicted.kernel)),
             token: abi.encodePacked(
-                type(EntenToken).creationCode,
+                type(Token).creationCode,
                 abi.encode("Enten", "ENTEN", predicted.controller, address(0), 0, type(uint256).max)
             )
         });
@@ -42,7 +42,7 @@ contract ControllerFactoryTest is Test {
         Controller controller = Controller(deployed.controller);
         Kernel kernel = Kernel(deployed.kernel);
         Vault vault = Vault(deployed.vault);
-        EntenToken token = EntenToken(deployed.token);
+        Token token = Token(deployed.token);
 
         assertEq(address(controller.KERNEL()), deployed.kernel);
         assertEq(address(controller.VAULT()), deployed.vault);
