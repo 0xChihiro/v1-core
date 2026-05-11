@@ -163,6 +163,26 @@ contract Vault is IVault {
         return _readAssetBalances(Slots.BACKING_AMOUNT_SLOT);
     }
 
+    // View treasury balances for arbitrary assets, including assets not added through the controller.
+    function treasuryBalances(address[] calldata assets) external view returns (AssetBalance[] memory values) {
+        values = new AssetBalance[](assets.length);
+        bytes32[] memory slots = new bytes32[](assets.length);
+        for (uint256 i = 0; i < assets.length;) {
+            slots[i] = _bucketSlot(Bucket.Treasury, assets[i]);
+            unchecked {
+                i++;
+            }
+        }
+        bytes32[] memory amounts = KERNEL.viewData(slots);
+        for (uint256 i = 0; i < amounts.length;) {
+            values[i].asset = assets[i];
+            values[i].amount = uint256(amounts[i]);
+            unchecked {
+                i++;
+            }
+        }
+    }
+
     function treasuryBalances() external view returns (IVault.AssetBalance[] memory) {
         return _readAssetBalances(Slots.TREASURY_AMOUNT_SLOT);
     }

@@ -989,6 +989,46 @@ contract VaultTest is Test {
         assertEq(team[1].amount, 44);
     }
 
+    function testTreasuryBalancesCanReadRequestedNonBackedAssets() public {
+        ERC20Mock untrackedAsset = new ERC20Mock();
+        address assetWithNoTreasuryBalance = makeAddr("Asset With No Treasury Balance");
+        address[] memory configuredAssets = new address[](1);
+        configuredAssets[0] = address(asset);
+        _setAssets(configuredAssets);
+
+        _setBucket(IVault.Bucket.Treasury, address(asset), 11);
+        _setBucket(IVault.Bucket.Treasury, address(secondAsset), 22);
+        _setBucket(IVault.Bucket.Treasury, address(untrackedAsset), 33);
+        _setBucket(IVault.Bucket.Redeem, address(secondAsset), 44);
+        _setBucket(IVault.Bucket.Team, address(untrackedAsset), 55);
+
+        address[] memory requestedAssets = new address[](5);
+        requestedAssets[0] = address(secondAsset);
+        requestedAssets[1] = address(asset);
+        requestedAssets[2] = address(untrackedAsset);
+        requestedAssets[3] = assetWithNoTreasuryBalance;
+        requestedAssets[4] = address(secondAsset);
+
+        IVault.AssetBalance[] memory treasury = vault.treasuryBalances(requestedAssets);
+
+        assertEq(treasury.length, requestedAssets.length);
+        assertEq(treasury[0].asset, address(secondAsset));
+        assertEq(treasury[0].amount, 22);
+        assertEq(treasury[1].asset, address(asset));
+        assertEq(treasury[1].amount, 11);
+        assertEq(treasury[2].asset, address(untrackedAsset));
+        assertEq(treasury[2].amount, 33);
+        assertEq(treasury[3].asset, assetWithNoTreasuryBalance);
+        assertEq(treasury[3].amount, 0);
+        assertEq(treasury[4].asset, address(secondAsset));
+        assertEq(treasury[4].amount, 22);
+
+        IVault.AssetBalance[] memory configuredTreasury = vault.treasuryBalances();
+        assertEq(configuredTreasury.length, 1);
+        assertEq(configuredTreasury[0].asset, address(asset));
+        assertEq(configuredTreasury[0].amount, 11);
+    }
+
     function testBalanceViewsReturnSingleAssetWithZeroBalances() public {
         address[] memory configuredAssets = new address[](1);
         configuredAssets[0] = address(asset);

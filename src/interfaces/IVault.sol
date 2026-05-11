@@ -43,5 +43,6 @@ interface IVault {
     function syncSurplus(address, Bucket) external;
     function backingBalances() external view returns (AssetBalance[] memory);
     function treasuryBalances() external view returns (AssetBalance[] memory);
+    function treasuryBalances(address[] calldata) external view returns (AssetBalance[] memory);
     function teamBalances() external view returns (AssetBalance[] memory);
 }
