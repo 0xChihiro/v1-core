@@ -23,7 +23,7 @@ contract LaunchScript is Script {
     function run() public {
         vm.startBroadcast();
         ControllerFactory factory = new ControllerFactory(address(42));
-        
+
         bytes32 salt = keccak256("enten.controller.launch");
         ControllerFactory.Deployment memory predicted = factory.predictDeployment(msg.sender, salt);
 
@@ -36,7 +36,9 @@ contract LaunchScript is Script {
             kernel: abi.encodePacked(kernelCode, abi.encode(predicted.controller, predicted.vault)),
             vault: abi.encodePacked(vaultCode, abi.encode(predicted.controller, predicted.kernel)),
             /// Update to your specific token data.
-            token: abi.encodePacked(tokenCode, abi.encode("Enten", "ENTEN", predicted.controller, address(0), 0, 10_000_000e18))
+            token: abi.encodePacked(
+                tokenCode, abi.encode("Enten", "ENTEN", predicted.controller, address(0), 0, 10_000_000e18)
+            )
         });
 
         /// Controller Factory Validates deployments to ensure things were done properly.

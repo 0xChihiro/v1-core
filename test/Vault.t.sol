@@ -17,6 +17,14 @@ contract VaultSlotHarness is Vault {
     }
 }
 
+contract VaultControllerMock {
+    address public immutable TOKEN;
+
+    constructor(address token) {
+        TOKEN = token;
+    }
+}
+
 contract VaultTest is Test {
     uint256 internal constant MAX_FUZZ_TRANSFER_COUNT = 16;
     uint256 internal constant MAX_FUZZ_TRANSFER_AMOUNT = 1e18;
@@ -24,14 +32,18 @@ contract VaultTest is Test {
     Kernel kernel;
     Vault vault;
     VaultSlotHarness slotHarness;
+    ERC20Mock protocolToken;
     ERC20Mock asset;
     ERC20Mock secondAsset;
 
-    address controller = makeAddr("Controller");
+    address controller;
     address user = makeAddr("User");
     address collector = makeAddr("Collector");
 
     function setUp() public {
+        protocolToken = new ERC20Mock();
+        controller = address(new VaultControllerMock(address(protocolToken)));
+
         uint256 nonce = vm.getNonce(address(this));
         address predictedKernel = vm.computeCreateAddress(address(this), nonce);
         address predictedVault = vm.computeCreateAddress(address(this), nonce + 1);
@@ -911,6 +923,18 @@ contract VaultTest is Test {
         assertEq(_bucketValue(IVault.Bucket.Redeem, address(asset)), 51);
         assertEq(_bucketValue(IVault.Bucket.Treasury, address(asset)), 30);
         assertEq(_bucketValue(IVault.Bucket.Team, address(asset)), 20);
+    }
+
+    function testSyncSurplusRejectsProtocolToken() public {
+        protocolToken.mint(address(vault), 100);
+        _setBucket(IVault.Bucket.Collateral, address(protocolToken), 100);
+
+        vm.prank(controller);
+        vm.expectRevert(Vault.Vault__CannotSyncToken.selector);
+        vault.syncSurplus(address(protocolToken), IVault.Bucket.Redeem);
+
+        assertEq(_bucketValue(IVault.Bucket.Collateral, address(protocolToken)), 100);
+        assertEq(_bucketValue(IVault.Bucket.Redeem, address(protocolToken)), 0);
     }
 
     function testSyncSurplusRejectsNonCoreBuckets() public {

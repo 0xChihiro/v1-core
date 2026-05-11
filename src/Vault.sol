@@ -3,6 +3,7 @@ pragma solidity 0.8.34;
 
 import {IKernel} from "./interfaces/IKernel.sol";
 import {IVault} from "./interfaces/IVault.sol";
+import {IController} from "./interfaces/IController.sol";
 import {Slots} from "./libraries/Slots.sol";
 import {IERC20} from "openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -15,7 +16,7 @@ contract Vault is IVault {
     IKernel public immutable KERNEL;
 
     // ---------------------- EVENTS -------------------------------------------- \\
-    event SurplusSynced(address indexed asset, Bucket indexed bucket, uint256 amount);
+    event Vault__SurplusSynced(address indexed asset, Bucket indexed bucket, uint256 amount);
     event Vault__HandleAccounting(TransferCall[] calls);
 
     // ---------------------- ERRORS -------------------------------------------- \\
@@ -25,6 +26,7 @@ contract Vault is IVault {
     error Vault__NoSurplus();
     error Vault__OnlyController();
     error Vault__InvalidTransferType();
+    error Vault__CannotSyncToken();
 
     constructor(address controller, address kernel) {
         if (controller == address(0) || kernel == address(0)) revert Vault__MisconfiguredSetup();
@@ -58,6 +60,8 @@ contract Vault is IVault {
                 revert Vault__InvalidTransferType();
             }
 
+            // If the from bucket is not none we know that we have to pull from a different bucket in the system
+            // Therefore we create a sub call to update the accounting in the Kernel.
             if (call.fromBucket != Bucket.None) {
                 subCalls[subIndex] =
                     IKernel.KernelCall({slot: _bucketSlot(call.fromBucket, call.asset), data: bytes32(call.amount)});
@@ -66,6 +70,8 @@ contract Vault is IVault {
                 }
             }
 
+            // If the to bucket it not none we will be adding to a bucket
+            // So we add a Kernel add call
             if (call.toBucket != Bucket.None) {
                 addCalls[addIndex] =
                     IKernel.KernelCall({slot: _bucketSlot(call.toBucket, call.asset), data: bytes32(call.amount)});
@@ -79,14 +85,17 @@ contract Vault is IVault {
             }
         }
 
+        // Set array lengths to their actual lengths in order to not pass arrays with empty indexes.
         assembly ("memory-safe") {
             mstore(addCalls, addIndex)
             mstore(subCalls, subIndex)
         }
 
+        // Update the balances in the effected buckets
         if (addIndex != 0) KERNEL.add(addCalls);
         if (subIndex != 0) KERNEL.sub(subCalls);
 
+        // Transfer all necessary tokens in and out of the system
         for (uint256 i; i < calls.length;) {
             TransferCall memory call = calls[i];
 
@@ -129,9 +138,10 @@ contract Vault is IVault {
         KERNEL.add(addCalls);
     }
 
+    // Allow assets that may have been sent to the vault to be added to one of the core buckets (Backing, Treasury, Team)
     function syncSurplus(address asset, Bucket bucket) external onlyController {
         _ensureCoreBucket(bucket);
-
+        if (asset == address(IController(CONTROLLER).TOKEN())) revert Vault__CannotSyncToken();
         uint256 actualBalance = IERC20(asset).balanceOf(address(this));
         uint256 accounted = _accountedBalance(asset);
 
@@ -140,7 +150,7 @@ contract Vault is IVault {
         uint256 surplus = actualBalance - accounted;
         KERNEL.add(_bucketSlot(bucket, asset), bytes32(surplus));
 
-        emit SurplusSynced(asset, bucket, surplus);
+        emit Vault__SurplusSynced(asset, bucket, surplus);
     }
 
     // ---------------------- VIEW FUNCTIONS ------------------------------------ \\
@@ -204,26 +214,6 @@ contract Vault is IVault {
         }
     }
 
-    function _slot(bytes32 namespace, address asset) internal pure returns (bytes32 slot) {
-        assembly ("memory-safe") {
-            mstore(0x00, namespace)
-            mstore(0x20, and(asset, 0xffffffffffffffffffffffffffffffffffffffff))
-            slot := keccak256(0x00, 0x40)
-        }
-    }
-
-    function _readAssets() internal view returns (address[] memory assets) {
-        uint256 assetCount = uint256(KERNEL.viewData(Slots.ASSETS_LENGTH_SLOT));
-        if (assetCount == 0) return new address[](0);
-
-        bytes memory raw = KERNEL.viewData(Slots.ASSETS_BASE_SLOT, assetCount);
-
-        assembly ("memory-safe") {
-            mstore(raw, assetCount)
-            assets := raw
-        }
-    }
-
     function _readAssetBalances(bytes32 namespace) internal view returns (IVault.AssetBalance[] memory values) {
         uint256 assetCount = uint256(KERNEL.viewData(Slots.ASSETS_LENGTH_SLOT));
         values = new IVault.AssetBalance[](assetCount);
@@ -232,6 +222,7 @@ contract Vault is IVault {
         bytes memory rawAssets = KERNEL.viewData(Slots.ASSETS_BASE_SLOT, assetCount);
         bytes32[] memory slots;
 
+        // Read the asset and add that to the values array, then replace the memory with the slot to read from the kernel for the balance of bucket => asset
         for (uint256 i = 0; i < assetCount;) {
             address asset;
             assembly ("memory-safe") {
@@ -253,6 +244,7 @@ contract Vault is IVault {
             slots := rawAssets
         }
 
+        // Call the kernel with the array of slots to read and turn those into uint 256 balances to be returned.
         bytes32[] memory responses = KERNEL.viewData(slots);
         for (uint256 i = 0; i < assetCount;) {
             values[i].amount = uint256(responses[i]);

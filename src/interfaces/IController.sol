@@ -1,6 +1,7 @@
 ///SPDX-License-Identifier: MIT
 pragma solidity 0.8.34;
 
+import {EntenToken} from "../EntenToken.sol";
 import {Keycode, Actions} from "../Utils.sol";
 import {IVault} from "./IVault.sol";
 
@@ -55,6 +56,7 @@ interface IController {
         bytes data;
     }
 
+    function TOKEN() external view returns (EntenToken);
     function settle(Settlement[] calldata) external;
     function sync(address, IVault.Bucket) external;
     function getModuleForKeycode(Keycode) external view returns (address);
