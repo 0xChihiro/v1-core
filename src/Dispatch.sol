@@ -8,6 +8,7 @@ import {IVault} from "./interfaces/IVault.sol";
 import {Keycode} from "./Utils.sol";
 import {Module} from "./Module.sol";
 import {Slots} from "./libraries/Slots.sol";
+import {Math} from "openzeppelin/contracts/utils/math/Math.sol";
 
 abstract contract Dispatch is IController {
     uint256 public constant BPS = 10_000;
@@ -19,6 +20,21 @@ abstract contract Dispatch is IController {
     address public immutable PROTOCOL_COLLECTOR;
 
     mapping(Keycode => bool) public mintPermissions;
+    mapping(Keycode => bool) public moduleDisabled;
+    bool public settlementsPaused;
+
+    event Controller__Settled(address indexed module, Settlement settlement);
+
+    error Controller__Locked();
+
+    bool private locked;
+
+    modifier lock() {
+        if (locked) revert Controller__Locked();
+        locked = true;
+        _;
+        locked = false;
+    }
 
     constructor(address protocolCollector, address kernel, address vault, address token) {
         PROTOCOL_COLLECTOR = protocolCollector;
@@ -29,11 +45,15 @@ abstract contract Dispatch is IController {
 
     function _getModuleKeycode(Module module_) internal view virtual returns (Keycode);
 
-    function settle(Settlement[] calldata settlements) external {
+    function settle(Settlement[] calldata settlements) external lock {
+        if (settlementsPaused) revert Controller__SettlementsPaused();
+
         Keycode moduleKeycode = _getModuleKeycode(Module(msg.sender));
         if (Keycode.unwrap(moduleKeycode) == bytes5(0)) revert Controller__InactiveModule();
+        if (moduleDisabled[moduleKeycode]) revert Controller__ModuleDisabled(moduleKeycode);
 
-        Backing[] memory startingBacking = _backingPerToken();
+        address[] memory assets = _assets();
+        (uint256 startingSupply, uint256[] memory startingBacking) = _backingSnapshot(assets);
         for (uint256 i = 0; i < settlements.length;) {
             Settlement calldata settlement = settlements[i];
             (IVault.TransferCall[] memory transferCalls, IVault.CreditCall[] memory creditCalls) =
@@ -53,10 +73,11 @@ abstract contract Dispatch is IController {
             if (settlement.multiStateUpdates.length > 0) {
                 _applyMultiStateUpdates(settlement.multiStateUpdates);
             }
+            emit Controller__Settled(msg.sender, settlement);
         }
-        Backing[] memory endingBacking = _backingPerToken();
+        (uint256 endingSupply, uint256[] memory endingBacking) = _backingSnapshot(assets);
 
-        _validateBacking(startingBacking, endingBacking);
+        _validateBacking(startingSupply, startingBacking, endingSupply, endingBacking);
     }
 
     function _dispatchSettlement(Settlement calldata settlement, Keycode moduleKeycode)
@@ -437,29 +458,34 @@ abstract contract Dispatch is IController {
         return result;
     }
 
-    function _backingPerToken() internal view returns (Backing[] memory backing) {
-        uint256 totalSupply = TOKEN.totalSupply();
-        if (totalSupply == 0) {
-            backing = new Backing[](0);
-            return backing;
-        }
+    function _assets() internal view returns (address[] memory assets) {
         uint256 assetsLength = uint256(KERNEL.viewData(Slots.ASSETS_LENGTH_SLOT));
         bytes memory rawAssets = KERNEL.viewData(Slots.ASSETS_BASE_SLOT, assetsLength);
-        address[] memory assets;
 
         assembly ("memory-safe") {
             mstore(rawAssets, assetsLength)
             assets := rawAssets
         }
+    }
 
-        backing = new Backing[](assets.length);
+    function _backingSnapshot(address[] memory assets)
+        internal
+        view
+        returns (uint256 totalSupply, uint256[] memory backing)
+    {
+        totalSupply = TOKEN.totalSupply();
+        if (totalSupply == 0) {
+            backing = new uint256[](0);
+            return (totalSupply, backing);
+        }
+
+        backing = new uint256[](assets.length);
 
         for (uint256 i = 0; i < assets.length;) {
             uint256 redeemableBackingAmount = uint256(KERNEL.viewData(_slot(Slots.BACKING_AMOUNT_SLOT, assets[i])));
             uint256 borrowedBackingAmount =
                 uint256(KERNEL.viewData(_slot(Slots.ASSET_TOTAL_BORROWED_BASE_SLOT, assets[i])));
-            uint256 perToken = (redeemableBackingAmount + borrowedBackingAmount) * 1e18 / totalSupply;
-            backing[i] = Backing({asset: assets[i], backingPerToken: perToken});
+            backing[i] = redeemableBackingAmount + borrowedBackingAmount;
             unchecked {
                 i++;
             }
@@ -474,12 +500,23 @@ abstract contract Dispatch is IController {
         }
     }
 
-    function _validateBacking(Backing[] memory start, Backing[] memory end) internal pure {
+    function _validateBacking(
+        uint256 startingSupply,
+        uint256[] memory start,
+        uint256 endingSupply,
+        uint256[] memory end
+    ) internal pure {
         if (start.length == 0) return;
         if (start.length != end.length) revert Controller__DifferentBackingLengths();
         for (uint256 i = 0; i < start.length;) {
-            if (start[i].asset != end[i].asset) revert Controller__ComparingDifferentAssets();
-            if (start[i].backingPerToken > end[i].backingPerToken) revert Controller__BackingWentDown();
+            uint256 requiredEndingBacking = Math.mulDiv(start[i], endingSupply, startingSupply);
+            if (mulmod(start[i], endingSupply, startingSupply) != 0) {
+                unchecked {
+                    ++requiredEndingBacking;
+                }
+            }
+            if (end[i] < requiredEndingBacking) revert Controller__BackingWentDown();
+
             unchecked {
                 i++;
             }

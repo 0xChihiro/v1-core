@@ -5,6 +5,7 @@ import {AccessControl} from "openzeppelin/contracts/access/AccessControl.sol";
 import {Dispatch} from "./Dispatch.sol";
 import {Keycode, Permissions, Actions, ensureContract, ensureValidKeycode} from "./Utils.sol";
 import {IVault} from "./interfaces/IVault.sol";
+import {ControllerAdapter} from "./ControllerAdapter.sol";
 import {Module} from "./Module.sol";
 import {Policy} from "./Policy.sol";
 
@@ -12,6 +13,7 @@ contract Controller is Dispatch, AccessControl {
     bytes32 public constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
     bytes32 public constant CREDITOR_ROLE = keccak256("CREDITOR_ROLE");
     bytes32 public constant MINT_PERMISSION_ROLE = keccak256("MINT_PERMISSION_ROLE");
+    bytes32 public constant GUARDIAN_ROLE = keccak256("GUARDIAN_ROLE");
 
     /// @notice Array of all modules currently installed.
     Keycode[] public allKeycodes;
@@ -26,6 +28,10 @@ contract Controller is Dispatch, AccessControl {
     /// @notice Module <> Policy Permissions.
     /// @dev    Keycode -> Policy -> Function Selector -> bool for permission
     mapping(Keycode => mapping(Policy => mapping(bytes4 => bool))) internal _modulePermissions;
+    /// @dev Policy dependency registrations captured at activation for deterministic cleanup.
+    mapping(Policy => Keycode[]) internal _policyDependencies;
+    /// @dev Policy permission registrations captured at activation for deterministic cleanup.
+    mapping(Policy => Permissions[]) internal _policyPermissions;
     /// @notice List of all active policies
     Policy[] public activePolicies;
     /// @notice Helper to get active policy quickly. Prevents need to loop through array.
@@ -45,6 +51,7 @@ contract Controller is Dispatch, AccessControl {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(EXECUTOR_ROLE, admin);
         _grantRole(MINT_PERMISSION_ROLE, admin);
+        _grantRole(GUARDIAN_ROLE, admin);
     }
 
     function getModuleForKeycode(Keycode keycode) public view override returns (address) {
@@ -78,51 +85,56 @@ contract Controller is Dispatch, AccessControl {
         VAULT.syncSurplus(asset, bucket);
     }
 
-    function _setPolicyPermissions(Policy policy, Permissions[] memory requests, bool granted) internal {
-        Keycode policyKeycode = policy.KEYCODE();
-        for (uint256 i; i < requests.length;) {
-            Permissions memory request = requests[i];
-            if (address(_moduleForKeycode[request.keycode]) == address(0)) {
-                revert Controller__ModuleNotInstalled(request.keycode);
-            }
+    function setMintPermission(Keycode module, bool allowed) external onlyRole(MINT_PERMISSION_ROLE) {
+        if (address(_moduleForKeycode[module]) == address(0)) revert Controller__ModuleNotInstalled(module);
 
-            _modulePermissions[request.keycode][policy][request.funcSelector] = granted;
+        mintPermissions[module] = allowed;
 
-            emit PermissionUpdated(request.keycode, policyKeycode, request.funcSelector, granted);
-
-            unchecked {
-                ++i;
-            }
-        }
+        emit MintPermissionUpdated(module, allowed);
     }
 
-    function _getModuleKeycode(Module module_) internal view override returns (Keycode) {
-        return getKeycodeForModule[module_];
+    function setSettlementsPaused(bool paused) external onlyRole(GUARDIAN_ROLE) {
+        settlementsPaused = paused;
+
+        emit Controller__SettlementPauseUpdated(paused);
+    }
+
+    function setModuleDisabled(Keycode module, bool disabled) external onlyRole(GUARDIAN_ROLE) {
+        if (address(_moduleForKeycode[module]) == address(0)) revert Controller__ModuleNotInstalled(module);
+
+        moduleDisabled[module] = disabled;
+
+        emit Controller__ModuleDisableUpdated(module, disabled);
     }
 
     // @notice Main Controller function. Initiates state changes to controller depending on Action passed in.
     function executeAction(Actions action, address target) external onlyRole(EXECUTOR_ROLE) {
-        if (action == Actions.InstallModule) {
-            ensureContract(target);
-            ensureValidKeycode(Module(target).KEYCODE());
-            _installModule(Module(target));
-        } else if (action == Actions.UpgradeModule) {
-            ensureContract(target);
-            ensureValidKeycode(Module(target).KEYCODE());
-            _upgradeModule(Module(target));
+        ensureContract(target);
+
+        if (action != Actions.DeactivatePolicy && address(ControllerAdapter(target).CONTROLLER()) != address(this)) {
+            revert Controller__InvalidAdapterController();
+        }
+
+        if (action == Actions.InstallModule || action == Actions.UpgradeModule) {
+            Module module_ = Module(target);
+            Keycode keycode = module_.KEYCODE();
+            ensureValidKeycode(keycode);
+
+            if (action == Actions.InstallModule) {
+                _installModule(module_, keycode);
+            } else {
+                _upgradeModule(module_, keycode);
+            }
         } else if (action == Actions.ActivatePolicy) {
-            ensureContract(target);
-            _activatePolicy(Policy(target));
-        } else if (action == Actions.DeactivatePolicy) {
-            ensureContract(target);
+            Policy policy = Policy(target);
+            _activatePolicy(policy);
+        } else {
             _deactivatePolicy(Policy(target));
         }
         emit ActionExecuted(action, target);
     }
 
-    function _installModule(Module newModule) internal {
-        Keycode keycode = newModule.KEYCODE();
-
+    function _installModule(Module newModule, Keycode keycode) internal {
         if (address(_moduleForKeycode[keycode]) != address(0)) {
             revert Controller__ModuleAlreadyInstalled(keycode);
         }
@@ -134,8 +146,7 @@ contract Controller is Dispatch, AccessControl {
         newModule.INIT();
     }
 
-    function _upgradeModule(Module newModule) internal {
-        Keycode keycode = newModule.KEYCODE();
+    function _upgradeModule(Module newModule, Keycode keycode) internal {
         Module oldModule = _moduleForKeycode[keycode];
 
         if (address(oldModule) == address(0) || address(oldModule) == address(newModule)) {
@@ -161,6 +172,7 @@ contract Controller is Dispatch, AccessControl {
         // Record module dependencies
         Keycode[] memory dependencies = policy.configureDependencies();
         _validateDependencies(dependencies);
+        _storePolicyDependencies(policy, dependencies);
         uint256 depLength = dependencies.length;
 
         for (uint256 i; i < depLength;) {
@@ -176,6 +188,7 @@ contract Controller is Dispatch, AccessControl {
 
         // Grant permissions for policy to access restricted module functions
         Permissions[] memory requests = policy.requestPermissions();
+        _storePolicyPermissions(policy, requests);
         _setPolicyPermissions(policy, requests, true);
     }
 
@@ -183,7 +196,7 @@ contract Controller is Dispatch, AccessControl {
         if (!_isPolicyActive(policy)) revert Controller__PolicyNotActivated(address(policy));
 
         // Revoke permissions
-        Permissions[] memory requests = policy.requestPermissions();
+        Permissions[] memory requests = _policyPermissions[policy];
         _setPolicyPermissions(policy, requests, false);
 
         // Remove policy from all policy data structures
@@ -196,9 +209,14 @@ contract Controller is Dispatch, AccessControl {
         delete getPolicyIndex[policy];
 
         // Remove policy from module dependents
-        _pruneFromDependents(policy);
+        Keycode[] memory dependencies = _policyDependencies[policy];
+        _pruneFromDependents(policy, dependencies);
+
+        delete _policyDependencies[policy];
+        delete _policyPermissions[policy];
     }
 
+    /// @notice reconfigure previous modules dependencies to point to the updated module
     function _reconfigurePolicies(Keycode keycode) internal {
         Policy[] memory dependents = moduleDependents[keycode];
         uint256 depLength = dependents.length;
@@ -212,9 +230,7 @@ contract Controller is Dispatch, AccessControl {
         }
     }
 
-    function _pruneFromDependents(Policy policy) internal {
-        Keycode[] memory dependencies = policy.configureDependencies();
-        _validateDependencies(dependencies);
+    function _pruneFromDependents(Policy policy, Keycode[] memory dependencies) internal {
         uint256 depcLength = dependencies.length;
 
         for (uint256 i; i < depcLength;) {
@@ -264,11 +280,47 @@ contract Controller is Dispatch, AccessControl {
         }
     }
 
-    function setMintPermission(Keycode module, bool allowed) external onlyRole(MINT_PERMISSION_ROLE) {
-        if (address(_moduleForKeycode[module]) == address(0)) revert Controller__ModuleNotInstalled(module);
+    function _storePolicyDependencies(Policy policy, Keycode[] memory dependencies) internal {
+        Keycode[] storage storedDependencies = _policyDependencies[policy];
+        for (uint256 i; i < dependencies.length;) {
+            storedDependencies.push(dependencies[i]);
 
-        mintPermissions[module] = allowed;
+            unchecked {
+                ++i;
+            }
+        }
+    }
 
-        emit MintPermissionUpdated(module, allowed);
+    function _storePolicyPermissions(Policy policy, Permissions[] memory requests) internal {
+        Permissions[] storage storedRequests = _policyPermissions[policy];
+        for (uint256 i; i < requests.length;) {
+            storedRequests.push(requests[i]);
+
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    function _setPolicyPermissions(Policy policy, Permissions[] memory requests, bool granted) internal {
+        Keycode policyKeycode = policy.KEYCODE();
+        for (uint256 i; i < requests.length;) {
+            Permissions memory request = requests[i];
+            if (address(_moduleForKeycode[request.keycode]) == address(0)) {
+                revert Controller__ModuleNotInstalled(request.keycode);
+            }
+
+            _modulePermissions[request.keycode][policy][request.funcSelector] = granted;
+
+            emit PermissionUpdated(request.keycode, policyKeycode, request.funcSelector, granted);
+
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    function _getModuleKeycode(Module module_) internal view override returns (Keycode) {
+        return getKeycodeForModule[module_];
     }
 }

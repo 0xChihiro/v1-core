@@ -69,6 +69,9 @@ contract ProtocolCollector is AccessControl {
             uint256 endBalance = IERC20(calls[i].to).balanceOf(address(this));
             uint256 bought = endBalance - startBalance;
             if (bought < calls[i].minAmount) revert ProtocolCollector__Slippage();
+            unchecked {
+                i++;
+            }
         }
         emit ProtocolCollector__Swap(msg.sender, returnData);
     }

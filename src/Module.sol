@@ -7,7 +7,10 @@ import {Keycode} from "./Utils.sol";
 abstract contract Module is ControllerAdapter {
     error Module__PolicyNotPermitted(address policy);
     modifier permissioned() {
-        if (msg.sender == address(CONTROLLER) || !CONTROLLER.modulePermissions(KEYCODE(), msg.sender, msg.sig)) {
+        if (
+            msg.sender == address(CONTROLLER) || !CONTROLLER.isPolicyActive(msg.sender)
+                || !CONTROLLER.modulePermissions(KEYCODE(), msg.sender, msg.sig)
+        ) {
             revert Module__PolicyNotPermitted(msg.sender);
         }
         _;

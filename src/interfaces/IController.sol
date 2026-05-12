@@ -66,6 +66,8 @@ interface IController {
     event ActionExecuted(Actions indexed action, address indexed target);
     event PermissionUpdated(Keycode indexed module, Keycode indexed policy, bytes4 indexed selector, bool granted);
     event MintPermissionUpdated(Keycode indexed module, bool allowed);
+    event Controller__SettlementPauseUpdated(bool paused);
+    event Controller__ModuleDisableUpdated(Keycode indexed module, bool disabled);
 
     error Controller__StateUpdatesOnly();
     error Controller__NoUpdatesGiven();
@@ -75,6 +77,7 @@ interface IController {
     error Controller__TransfersDuringBurn();
     error Controller__ZeroAddress();
     error Controller__TargetNotAContract(address target);
+    error Controller__InvalidAdapterController();
     error Controller__ModuleAlreadyInstalled(Keycode keycode);
     error Controller__ModuleNotInstalled(Keycode keycode);
     error Controller__InvalidModuleUpgrade(Keycode keycode);
@@ -82,6 +85,8 @@ interface IController {
     error Controller__PolicyNotActivated(address);
     error Controller__DuplicateDependency(Keycode keycode);
     error Controller__InactiveModule();
+    error Controller__SettlementsPaused();
+    error Controller__ModuleDisabled(Keycode keycode);
     error Controller__MintPermissionDenied();
     error Controller__InvalidStateUpdate();
 }

@@ -164,6 +164,16 @@ contract LifecyclePolicy is Policy {
         return permissionRequests;
     }
 
+    function setDependency(Keycode dependency) external {
+        delete dependencies;
+        dependencies.push(dependency);
+    }
+
+    function setPermissionRequest(Keycode permissionKeycode, bytes4 selector) external {
+        delete permissionRequests;
+        permissionRequests.push(Permissions({keycode: permissionKeycode, funcSelector: selector}));
+    }
+
     function callRestrictedModule() external view returns (uint256) {
         Keycode keycode = permissionRequests[0].keycode;
         return LifecycleModuleV1(getModuleAddress(keycode)).restrictedPing();
@@ -194,6 +204,16 @@ contract DuplicateDependencyPolicy is Policy {
     }
 }
 
+contract ControllerPermissionHarness is Controller {
+    constructor(address admin, address protocolCollector, address kernel, address vault, address token)
+        Controller(admin, protocolCollector, kernel, vault, token)
+    {}
+
+    function forcePermission(Keycode keycode, Policy policy, bytes4 selector, bool granted) external {
+        _modulePermissions[keycode][policy][selector] = granted;
+    }
+}
+
 contract ControllerTest is Test {
     uint256 internal constant INITIAL_SUPPLY = 1_000 ether;
     uint256 internal constant BPS = 10_000;
@@ -202,6 +222,8 @@ contract ControllerTest is Test {
     event ActionExecuted(Actions indexed action, address indexed target);
     event PermissionUpdated(Keycode indexed module, Keycode indexed policy, bytes4 indexed selector, bool granted);
     event MintPermissionUpdated(Keycode indexed module, bool allowed);
+    event Controller__SettlementPauseUpdated(bool paused);
+    event Controller__ModuleDisableUpdated(Keycode indexed module, bool disabled);
 
     Controller controller;
     Kernel kernel;
@@ -281,6 +303,7 @@ contract ControllerTest is Test {
         assertTrue(controller.hasRole(controller.DEFAULT_ADMIN_ROLE(), admin));
         assertTrue(controller.hasRole(controller.EXECUTOR_ROLE(), admin));
         assertTrue(controller.hasRole(controller.MINT_PERMISSION_ROLE(), admin));
+        assertTrue(controller.hasRole(controller.GUARDIAN_ROLE(), admin));
         assertFalse(controller.hasRole(controller.CREDITOR_ROLE(), admin));
     }
 
@@ -374,6 +397,56 @@ contract ControllerTest is Test {
 
         vm.prank(admin);
         controller.setMintPermission(moduleKeycode, false);
+    }
+
+    function testGuardianRoleControlsEmergencySettlementSwitches() public {
+        Keycode moduleKeycode = module.KEYCODE();
+        Keycode missingKeycode = Keycode.wrap(bytes5("MISSN"));
+        bytes32 guardianRole = controller.GUARDIAN_ROLE();
+        address guardian = makeAddr("Guardian");
+
+        vm.prank(user);
+        vm.expectRevert();
+        controller.setSettlementsPaused(true);
+
+        vm.prank(user);
+        vm.expectRevert();
+        controller.setModuleDisabled(moduleKeycode, true);
+
+        vm.prank(admin);
+        controller.grantRole(guardianRole, guardian);
+
+        vm.expectEmit(false, false, false, true, address(controller));
+        emit Controller__SettlementPauseUpdated(true);
+        vm.prank(guardian);
+        controller.setSettlementsPaused(true);
+
+        assertTrue(controller.settlementsPaused());
+
+        vm.expectEmit(false, false, false, true, address(controller));
+        emit Controller__SettlementPauseUpdated(false);
+        vm.prank(guardian);
+        controller.setSettlementsPaused(false);
+
+        assertFalse(controller.settlementsPaused());
+
+        vm.expectEmit(true, false, false, true, address(controller));
+        emit Controller__ModuleDisableUpdated(moduleKeycode, true);
+        vm.prank(guardian);
+        controller.setModuleDisabled(moduleKeycode, true);
+
+        assertTrue(controller.moduleDisabled(moduleKeycode));
+
+        vm.expectEmit(true, false, false, true, address(controller));
+        emit Controller__ModuleDisableUpdated(moduleKeycode, false);
+        vm.prank(guardian);
+        controller.setModuleDisabled(moduleKeycode, false);
+
+        assertFalse(controller.moduleDisabled(moduleKeycode));
+
+        vm.prank(guardian);
+        vm.expectRevert(abi.encodeWithSelector(IController.Controller__ModuleNotInstalled.selector, missingKeycode));
+        controller.setModuleDisabled(missingKeycode, true);
     }
 
     function testExecuteActionEmitsModuleLifecycleEvents() public {
@@ -487,6 +560,18 @@ contract ControllerTest is Test {
         vm.expectRevert(abi.encodeWithSelector(TargetNotAContract.selector, user));
         controller.executeAction(Actions.InstallModule, user);
 
+        address wrongController = makeAddr("Wrong Controller");
+        LifecycleModuleV1 miswiredModule = new LifecycleModuleV1(wrongController);
+        Keycode miswiredKeycode = miswiredModule.KEYCODE();
+
+        vm.prank(admin);
+        vm.expectRevert(IController.Controller__InvalidAdapterController.selector);
+        controller.executeAction(Actions.InstallModule, address(miswiredModule));
+
+        assertEq(controller.getModuleForKeycode(miswiredKeycode), address(0));
+        assertEq(Keycode.unwrap(controller.getKeycodeForModule(miswiredModule)), bytes5(0));
+        assertEq(miswiredModule.initCount(), 0);
+
         InvalidKeycodeModule invalidKeycodeModule = new InvalidKeycodeModule(address(controller));
         Keycode invalidKeycode = invalidKeycodeModule.KEYCODE();
 
@@ -579,6 +664,17 @@ contract ControllerTest is Test {
         vm.prank(admin);
         controller.executeAction(Actions.InstallModule, address(lifecycleModule));
 
+        address wrongController = makeAddr("Wrong Controller");
+        LifecycleModuleV2 miswiredUpgrade = new LifecycleModuleV2(wrongController);
+
+        vm.prank(admin);
+        vm.expectRevert(IController.Controller__InvalidAdapterController.selector);
+        controller.executeAction(Actions.UpgradeModule, address(miswiredUpgrade));
+
+        assertEq(controller.getModuleForKeycode(lifecycleKeycode), address(lifecycleModule));
+        assertEq(Keycode.unwrap(controller.getKeycodeForModule(miswiredUpgrade)), bytes5(0));
+        assertEq(miswiredUpgrade.initCount(), 0);
+
         vm.prank(admin);
         vm.expectRevert(abi.encodeWithSelector(IController.Controller__InvalidModuleUpgrade.selector, lifecycleKeycode));
         controller.executeAction(Actions.UpgradeModule, address(lifecycleModule));
@@ -635,6 +731,23 @@ contract ControllerTest is Test {
 
         vm.prank(admin);
         controller.executeAction(Actions.InstallModule, address(lifecycleModule));
+
+        address wrongController = makeAddr("Wrong Controller");
+        LifecyclePolicy miswiredPolicy = new LifecyclePolicy(
+            wrongController, lifecycleKeycode, lifecycleKeycode, LifecycleModuleV1.restrictedPing.selector
+        );
+
+        vm.prank(admin);
+        vm.expectRevert(IController.Controller__InvalidAdapterController.selector);
+        controller.executeAction(Actions.ActivatePolicy, address(miswiredPolicy));
+
+        assertFalse(controller.isPolicyActive(address(miswiredPolicy)));
+        assertFalse(
+            controller.modulePermissions(
+                lifecycleKeycode, address(miswiredPolicy), LifecycleModuleV1.restrictedPing.selector
+            )
+        );
+        assertEq(miswiredPolicy.configureCount(), 0);
 
         vm.prank(admin);
         controller.executeAction(Actions.ActivatePolicy, address(policy));
@@ -734,7 +847,7 @@ contract ControllerTest is Test {
         assertFalse(
             controller.modulePermissions(lifecycleKeycode, address(policy), LifecycleModuleV1.restrictedPing.selector)
         );
-        assertEq(policy.configureCount(), 2);
+        assertEq(policy.configureCount(), 1);
 
         vm.expectRevert(abi.encodeWithSelector(Module.Module__PolicyNotPermitted.selector, address(policy)));
         policy.callRestrictedModule();
@@ -744,6 +857,101 @@ contract ControllerTest is Test {
 
         vm.expectRevert();
         controller.moduleDependents(lifecycleKeycode, 0);
+    }
+
+    function testExecuteActionDeactivationUsesActivatedPermissionSnapshot() public {
+        LifecycleModuleV1 lifecycleModule = new LifecycleModuleV1(address(controller));
+        Keycode lifecycleKeycode = lifecycleModule.KEYCODE();
+        LifecyclePolicy policy = new LifecyclePolicy(
+            address(controller), lifecycleKeycode, lifecycleKeycode, LifecycleModuleV1.restrictedPing.selector
+        );
+
+        vm.prank(admin);
+        controller.executeAction(Actions.InstallModule, address(lifecycleModule));
+
+        vm.prank(admin);
+        controller.executeAction(Actions.ActivatePolicy, address(policy));
+
+        assertTrue(
+            controller.modulePermissions(lifecycleKeycode, address(policy), LifecycleModuleV1.restrictedPing.selector)
+        );
+
+        policy.setPermissionRequest(module.KEYCODE(), SettlementTestModule.settle.selector);
+
+        vm.prank(admin);
+        controller.executeAction(Actions.DeactivatePolicy, address(policy));
+
+        assertFalse(controller.isPolicyActive(address(policy)));
+        assertFalse(
+            controller.modulePermissions(lifecycleKeycode, address(policy), LifecycleModuleV1.restrictedPing.selector)
+        );
+        assertFalse(
+            controller.modulePermissions(module.KEYCODE(), address(policy), SettlementTestModule.settle.selector)
+        );
+    }
+
+    function testExecuteActionDeactivationUsesActivatedDependencySnapshot() public {
+        LifecycleModuleV1 lifecycleModule = new LifecycleModuleV1(address(controller));
+        Keycode lifecycleKeycode = lifecycleModule.KEYCODE();
+        Keycode settlementKeycode = module.KEYCODE();
+        LifecyclePolicy policy = new LifecyclePolicy(
+            address(controller), lifecycleKeycode, lifecycleKeycode, LifecycleModuleV1.restrictedPing.selector
+        );
+
+        vm.prank(admin);
+        controller.executeAction(Actions.InstallModule, address(lifecycleModule));
+
+        vm.prank(admin);
+        controller.executeAction(Actions.ActivatePolicy, address(policy));
+
+        policy.setDependency(settlementKeycode);
+
+        vm.prank(admin);
+        controller.executeAction(Actions.DeactivatePolicy, address(policy));
+
+        assertFalse(controller.isPolicyActive(address(policy)));
+        assertEq(policy.configureCount(), 1);
+
+        vm.expectRevert();
+        controller.moduleDependents(lifecycleKeycode, 0);
+
+        vm.expectRevert();
+        controller.moduleDependents(settlementKeycode, 0);
+    }
+
+    function testInactivePolicyCannotUseStalePermissionBit() public {
+        uint256 nonce = vm.getNonce(address(this));
+        address predictedKernel = vm.computeCreateAddress(address(this), nonce);
+        address predictedVault = vm.computeCreateAddress(address(this), nonce + 1);
+        address predictedToken = vm.computeCreateAddress(address(this), nonce + 2);
+        address predictedController = vm.computeCreateAddress(address(this), nonce + 3);
+
+        new Kernel(predictedController, predictedVault);
+        new Vault(predictedController, predictedKernel);
+        new Token("Enten", "ENTEN", predictedController, user, INITIAL_SUPPLY, type(uint256).max);
+        ControllerPermissionHarness permissionHarness =
+            new ControllerPermissionHarness(admin, protocolCollector, predictedKernel, predictedVault, predictedToken);
+
+        LifecycleModuleV1 lifecycleModule = new LifecycleModuleV1(address(permissionHarness));
+        Keycode lifecycleKeycode = lifecycleModule.KEYCODE();
+        LifecyclePolicy policy = new LifecyclePolicy(
+            address(permissionHarness), lifecycleKeycode, lifecycleKeycode, LifecycleModuleV1.restrictedPing.selector
+        );
+
+        vm.prank(admin);
+        permissionHarness.executeAction(Actions.InstallModule, address(lifecycleModule));
+
+        permissionHarness.forcePermission(lifecycleKeycode, policy, LifecycleModuleV1.restrictedPing.selector, true);
+
+        assertFalse(permissionHarness.isPolicyActive(address(policy)));
+        assertTrue(
+            permissionHarness.modulePermissions(
+                lifecycleKeycode, address(policy), LifecycleModuleV1.restrictedPing.selector
+            )
+        );
+
+        vm.expectRevert(abi.encodeWithSelector(Module.Module__PolicyNotPermitted.selector, address(policy)));
+        policy.callRestrictedModule();
     }
 
     function testExecuteActionDeactivationMaintainsRemainingPolicyIndexesAndDependencies() public {
@@ -789,7 +997,7 @@ contract ControllerTest is Test {
                 lifecycleKeycode, address(remainingPolicy), LifecycleModuleV1.restrictedPing.selector
             )
         );
-        assertEq(removedPolicy.configureCount(), 2);
+        assertEq(removedPolicy.configureCount(), 1);
         assertEq(remainingPolicy.configureCount(), 1);
 
         vm.expectRevert(abi.encodeWithSelector(Module.Module__PolicyNotPermitted.selector, address(removedPolicy)));
@@ -1076,6 +1284,22 @@ contract ControllerTest is Test {
         _assertStateUnchanged(beforeState, bytes32(0), bytes32(0));
     }
 
+    function testSettleRevertsWhenBackingDropsInsidePriorRoundedRatioGap() public {
+        _seedBacking(INITIAL_SUPPLY + 1);
+
+        IController.Settlement[] memory settlements =
+            _singleSettlement(IController.StateTransitions.StateUpdate, 0, new IController.Receipt[](0));
+        settlements[0].singleStateUpdates =
+            _oneStateUpdate(IController.Op.Sub, _bucketSlot(IVault.Bucket.Redeem, address(asset)), bytes32(uint256(1)));
+
+        SystemState memory beforeState = _snapshot(bytes32(0), bytes32(0));
+
+        vm.expectRevert(IController.Controller__BackingWentDown.selector);
+        module.settle(settlements);
+
+        _assertStateUnchanged(beforeState, bytes32(0), bytes32(0));
+    }
+
     function testSettlePaymentWithOverAllocatedBpsRevertsAndLeavesStateUnchanged() public {
         _seedBacking(INITIAL_SUPPLY);
         _setRawSlot(Slots.TEAM_PERCENTAGE_SLOT, bytes32(uint256(6_000)));
@@ -1178,6 +1402,45 @@ contract ControllerTest is Test {
         _assertStateUnchanged(beforeState, rawSlot, bytes32(0));
     }
 
+    function testSettleWhilePausedRevertsAndLeavesStateUnchanged() public {
+        bytes32 rawSlot = keccak256("controller.paused-settlement");
+        _setRawSlot(rawSlot, bytes32(uint256(10)));
+
+        IController.Settlement[] memory settlements =
+            _singleSettlement(IController.StateTransitions.StateUpdate, 0, new IController.Receipt[](0));
+        settlements[0].singleStateUpdates = _oneStateUpdate(IController.Op.Set, rawSlot, bytes32(uint256(20)));
+
+        vm.prank(admin);
+        controller.setSettlementsPaused(true);
+
+        SystemState memory beforeState = _snapshot(rawSlot, bytes32(0));
+
+        vm.expectRevert(IController.Controller__SettlementsPaused.selector);
+        module.settle(settlements);
+
+        _assertStateUnchanged(beforeState, rawSlot, bytes32(0));
+    }
+
+    function testSettleFromDisabledModuleRevertsAndLeavesStateUnchanged() public {
+        bytes32 rawSlot = keccak256("controller.disabled-module");
+        _setRawSlot(rawSlot, bytes32(uint256(10)));
+
+        IController.Settlement[] memory settlements =
+            _singleSettlement(IController.StateTransitions.StateUpdate, 0, new IController.Receipt[](0));
+        settlements[0].singleStateUpdates = _oneStateUpdate(IController.Op.Set, rawSlot, bytes32(uint256(20)));
+
+        Keycode moduleKeycode = module.KEYCODE();
+        vm.prank(admin);
+        controller.setModuleDisabled(moduleKeycode, true);
+
+        SystemState memory beforeState = _snapshot(rawSlot, bytes32(0));
+
+        vm.expectRevert(abi.encodeWithSelector(IController.Controller__ModuleDisabled.selector, moduleKeycode));
+        module.settle(settlements);
+
+        _assertStateUnchanged(beforeState, rawSlot, bytes32(0));
+    }
+
     function testSettleVaultTransferFailureRevertsAndLeavesStateUnchanged() public {
         _seedBacking(INITIAL_SUPPLY);
         asset.mint(user, 40 ether);
@@ -1244,6 +1507,31 @@ contract ControllerTest is Test {
         assertEq(uint256(kernel.viewData(rawSlot)), 55);
         assertEq(asset.balanceOf(address(vault)), 100 ether);
         assertEq(_bucketValue(IVault.Bucket.Redeem, address(asset)), 100 ether);
+    }
+
+    function testSettleStateUpdateCanAppendAssetRegistryWithoutChangingBackingComparisonSet() public {
+        _seedBacking(INITIAL_SUPPLY);
+
+        IController.Settlement[] memory settlements =
+            _singleSettlement(IController.StateTransitions.StateUpdate, 0, new IController.Receipt[](0));
+        settlements[0].singleStateUpdates =
+            _oneStateUpdate(IController.Op.Set, Slots.ASSETS_LENGTH_SLOT, bytes32(uint256(2)));
+
+        IController.StateUpdates[] memory multiUpdates = new IController.StateUpdates[](1);
+        multiUpdates[0] = IController.StateUpdates({
+            startSlot: Slots.ASSETS_BASE_SLOT,
+            data: abi.encode(bytes32(uint256(uint160(address(asset)))), bytes32(uint256(uint160(address(secondAsset)))))
+        });
+        settlements[0].multiStateUpdates = multiUpdates;
+
+        module.settle(settlements);
+
+        assertEq(uint256(kernel.viewData(Slots.ASSETS_LENGTH_SLOT)), 2);
+        assertEq(kernel.viewData(Slots.ASSETS_BASE_SLOT), bytes32(uint256(uint160(address(asset)))));
+        assertEq(
+            kernel.viewData(bytes32(uint256(Slots.ASSETS_BASE_SLOT) + 1)),
+            bytes32(uint256(uint160(address(secondAsset))))
+        );
     }
 
     function testSettlePaymentFromZeroSupplyCanEstablishBacking() public {
