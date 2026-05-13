@@ -35,11 +35,11 @@ contract ControllerFactory is IControllerFactory {
     bytes32 private constant TOKEN_LABEL = keccak256("TOKEN");
 
     bytes32 private constant CONTROLLER_CREATION_CODE_HASH =
-        0x7bc702607616a110e87bda34b903ff762b5ff541ae228cff3829b86871c9010c;
+        0x981df2546e2acc4586185e3179f1a9983a3f5ced32301a6a811a52f270640c03;
     bytes32 private constant KERNEL_CREATION_CODE_HASH =
         0x69f3aaf07aad1ce5b4e9a4755b2a07413d0c9d6c69f1173688deeaf66bd1f049;
     bytes32 private constant VAULT_CREATION_CODE_HASH =
-        0x468c53732a5f1608e32f384b9a113f2bb2e67916b046ba58a2478bc31fc5d178;
+        0x347b94d9e3ff73ad02c08944020bee8d3d9b52286321d58cd17ce1219b2a1fa2;
     bytes32 private constant TOKEN_CREATION_CODE_HASH =
         0x773eb04c6db7e07dc39cac846012a96079dd40446acf07f011710d888675d5c5;
 

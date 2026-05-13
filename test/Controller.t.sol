@@ -764,7 +764,9 @@ contract ControllerTest is Test {
         );
 
         vm.prank(admin);
-        vm.expectRevert(abi.encodeWithSelector(IController.Controller__ModuleNotInstalled.selector, missingKeycode));
+        vm.expectRevert(
+            abi.encodeWithSelector(IController.Controller__PermissionDependencyNotDeclared.selector, missingKeycode)
+        );
         controller.executeAction(Actions.ActivatePolicy, address(missingPermissionPolicy));
 
         assertFalse(controller.isPolicyActive(address(missingPermissionPolicy)));
@@ -774,6 +776,40 @@ contract ControllerTest is Test {
             )
         );
         assertEq(missingPermissionPolicy.configureCount(), 0);
+    }
+
+    function testExecuteActionRejectsPermissionForUndeclaredDependency() public {
+        LifecycleModuleV1 lifecycleModule = new LifecycleModuleV1(address(controller));
+        Keycode lifecycleKeycode = lifecycleModule.KEYCODE();
+        Keycode undeclaredPermissionKeycode = module.KEYCODE();
+        LifecyclePolicy policy = new LifecyclePolicy(
+            address(controller), lifecycleKeycode, undeclaredPermissionKeycode, SettlementTestModule.settle.selector
+        );
+
+        vm.prank(admin);
+        controller.executeAction(Actions.InstallModule, address(lifecycleModule));
+
+        vm.prank(admin);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IController.Controller__PermissionDependencyNotDeclared.selector, undeclaredPermissionKeycode
+            )
+        );
+        controller.executeAction(Actions.ActivatePolicy, address(policy));
+
+        assertFalse(controller.isPolicyActive(address(policy)));
+        assertFalse(
+            controller.modulePermissions(
+                undeclaredPermissionKeycode, address(policy), SettlementTestModule.settle.selector
+            )
+        );
+        assertEq(policy.configureCount(), 0);
+
+        vm.expectRevert();
+        controller.activePolicies(0);
+
+        vm.expectRevert();
+        controller.moduleDependents(lifecycleKeycode, 0);
     }
 
     function testExecuteActionRejectsDuplicatePolicyDependencies() public {

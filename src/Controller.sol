@@ -188,6 +188,7 @@ contract Controller is Dispatch, AccessControl {
 
         // Grant permissions for policy to access restricted module functions
         Permissions[] memory requests = policy.requestPermissions();
+        _validatePermissionDependencies(requests, dependencies);
         _storePolicyPermissions(policy, requests);
         _setPolicyPermissions(policy, requests, true);
     }
@@ -273,6 +274,36 @@ contract Controller is Dispatch, AccessControl {
                     ++j;
                 }
             }
+
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    function _validatePermissionDependencies(Permissions[] memory requests, Keycode[] memory dependencies)
+        internal
+        pure
+    {
+        uint256 reqLength = requests.length;
+        uint256 depLength = dependencies.length;
+
+        for (uint256 i; i < reqLength;) {
+            Keycode permissionKeycode = requests[i].keycode;
+            bool declared;
+
+            for (uint256 j; j < depLength;) {
+                if (Keycode.unwrap(permissionKeycode) == Keycode.unwrap(dependencies[j])) {
+                    declared = true;
+                    break;
+                }
+
+                unchecked {
+                    ++j;
+                }
+            }
+
+            if (!declared) revert Controller__PermissionDependencyNotDeclared(permissionKeycode);
 
             unchecked {
                 ++i;

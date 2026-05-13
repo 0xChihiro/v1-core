@@ -84,6 +84,7 @@ interface IController {
     error Controller__PolicyAlreadyActivated(address);
     error Controller__PolicyNotActivated(address);
     error Controller__DuplicateDependency(Keycode keycode);
+    error Controller__PermissionDependencyNotDeclared(Keycode keycode);
     error Controller__InactiveModule();
     error Controller__SettlementsPaused();
     error Controller__ModuleDisabled(Keycode keycode);
