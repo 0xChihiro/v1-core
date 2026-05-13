@@ -99,7 +99,7 @@ abstract contract Dispatch is IController {
             } else {
                 if (transition == uint8(StateTransitions.Redeem)) {
                     TOKEN.burnFrom(settlement.payer, settlement.amount);
-                    transferCalls = _buildRedeemCalls(settlement.receipts, settlement.payer);
+                    transferCalls = _buildClaimOrRedeemCalls(settlement.receipts, settlement.payer, false);
                 } else {
                     if (!mintPermissions[moduleKeycode]) revert Controller__MintPermissionDenied();
                     (transferCalls, creditCalls) = _buildPaymentCalls(settlement.receipts, settlement.payer);
@@ -115,7 +115,7 @@ abstract contract Dispatch is IController {
                 }
             } else {
                 if (transition == uint8(StateTransitions.Claim)) {
-                    transferCalls = _buildClaimCalls(settlement.receipts, settlement.payer);
+                    transferCalls = _buildClaimOrRedeemCalls(settlement.receipts, settlement.payer, true);
                 } else {
                     transferCalls = _buildDepositOrWithdrawCalls(
                         settlement.receipts, settlement.payer, settlement.amount, address(TOKEN), true
@@ -221,17 +221,18 @@ abstract contract Dispatch is IController {
         }
     }
 
-    function _buildRedeemCalls(Receipt[] calldata receipts, address payer)
+    function _buildClaimOrRedeemCalls(Receipt[] calldata receipts, address payer, bool claim)
         internal
         pure
         returns (IVault.TransferCall[] memory calls)
     {
+        IVault.Bucket fromBucket = claim ? IVault.Bucket.Team : IVault.Bucket.Redeem;
         calls = new IVault.TransferCall[](receipts.length);
         for (uint256 i = 0; i < receipts.length;) {
             calls[i] = IVault.TransferCall({
                 callType: IVault.TransferType.Send,
                 toBucket: IVault.Bucket.None,
-                fromBucket: IVault.Bucket.Redeem,
+                fromBucket: fromBucket,
                 asset: receipts[i].asset,
                 user: payer,
                 amount: receipts[i].amount
@@ -306,27 +307,6 @@ abstract contract Dispatch is IController {
                 callType: callType,
                 toBucket: toBucket,
                 fromBucket: fromBucket,
-                asset: receipts[i].asset,
-                user: target,
-                amount: receipts[i].amount
-            });
-            unchecked {
-                i++;
-            }
-        }
-    }
-
-    function _buildClaimCalls(Receipt[] calldata receipts, address target)
-        internal
-        pure
-        returns (IVault.TransferCall[] memory calls)
-    {
-        calls = new IVault.TransferCall[](receipts.length);
-        for (uint256 i = 0; i < receipts.length;) {
-            calls[i] = IVault.TransferCall({
-                callType: IVault.TransferType.Send,
-                toBucket: IVault.Bucket.None,
-                fromBucket: IVault.Bucket.Team,
                 asset: receipts[i].asset,
                 user: target,
                 amount: receipts[i].amount
