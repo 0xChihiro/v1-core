@@ -92,9 +92,9 @@ abstract contract Dispatch is IController {
         if (transition < uint8(StateTransitions.Deploy)) {
             if (transition < uint8(StateTransitions.Redeem)) {
                 if (transition == uint8(StateTransitions.Borrow)) {
-                    transferCalls = _buildBorrowCalls(settlement.receipts, settlement.payer);
+                    transferCalls = _buildBorrowOrRepayCalls(settlement.receipts, settlement.payer, true);
                 } else {
-                    transferCalls = _buildRepayCalls(settlement.receipts, settlement.payer);
+                    transferCalls = _buildBorrowOrRepayCalls(settlement.receipts, settlement.payer, false);
                 }
             } else {
                 if (transition == uint8(StateTransitions.Redeem)) {
@@ -102,30 +102,31 @@ abstract contract Dispatch is IController {
                     transferCalls = _buildRedeemCalls(settlement.receipts, settlement.payer);
                 } else {
                     if (!mintPermissions[moduleKeycode]) revert Controller__MintPermissionDenied();
-                    transferCalls = _buildPaymentTransferCalls(settlement.receipts, settlement.payer);
-                    creditCalls = _buildPaymentCreditCalls(settlement.receipts);
+                    (transferCalls, creditCalls) = _buildPaymentCalls(settlement.receipts, settlement.payer);
                     TOKEN.mint(settlement.payer, settlement.amount);
                 }
             }
         } else if (transition < uint8(StateTransitions.Withdraw)) {
             if (transition < uint8(StateTransitions.Claim)) {
                 if (transition == uint8(StateTransitions.Deploy)) {
-                    transferCalls = _buildDeployCalls(settlement.receipts, settlement.payer);
+                    transferCalls = _buildDeployOrRecallCalls(settlement.receipts, settlement.payer, true);
                 } else {
-                    transferCalls = _buildRecallCalls(settlement.receipts, settlement.payer);
+                    transferCalls = _buildDeployOrRecallCalls(settlement.receipts, settlement.payer, false);
                 }
             } else {
                 if (transition == uint8(StateTransitions.Claim)) {
                     transferCalls = _buildClaimCalls(settlement.receipts, settlement.payer);
                 } else {
-                    transferCalls =
-                        _buildDepositCalls(settlement.receipts, settlement.payer, settlement.amount, address(TOKEN));
+                    transferCalls = _buildDepositOrWithdrawCalls(
+                        settlement.receipts, settlement.payer, settlement.amount, address(TOKEN), true
+                    );
                 }
             }
         } else {
             if (transition == uint8(StateTransitions.Withdraw)) {
-                transferCalls =
-                    _buildWithdrawCalls(settlement.receipts, settlement.payer, settlement.amount, address(TOKEN));
+                transferCalls = _buildDepositOrWithdrawCalls(
+                    settlement.receipts, settlement.payer, settlement.amount, address(TOKEN), false
+                );
             } else if (transition == uint8(StateTransitions.Burn)) {
                 if (settlement.receipts.length > 0) revert Controller__TransfersDuringBurn();
                 TOKEN.burnFrom(settlement.payer, settlement.amount);
@@ -196,40 +197,22 @@ abstract contract Dispatch is IController {
         if (setLength != 0) KERNEL.updateState(setCalls);
     }
 
-    function _buildBorrowCalls(Receipt[] calldata receipts, address user)
+    function _buildBorrowOrRepayCalls(Receipt[] calldata receipts, address user, bool borrow)
         internal
         pure
         returns (IVault.TransferCall[] memory calls)
     {
+        IVault.TransferType callType = borrow ? IVault.TransferType.Send : IVault.TransferType.Receive;
+        IVault.Bucket toBucket = borrow ? IVault.Bucket.Borrow : IVault.Bucket.Redeem;
+        IVault.Bucket fromBucket = borrow ? IVault.Bucket.Redeem : IVault.Bucket.Borrow;
         calls = new IVault.TransferCall[](receipts.length);
         for (uint256 i = 0; i < receipts.length;) {
             calls[i] = IVault.TransferCall({
-                callType: IVault.TransferType.Send,
-                toBucket: IVault.Bucket.Borrow,
-                fromBucket: IVault.Bucket.Redeem,
+                callType: callType,
+                toBucket: toBucket,
+                fromBucket: fromBucket,
                 asset: receipts[i].asset,
                 user: user,
-                amount: receipts[i].amount
-            });
-            unchecked {
-                i++;
-            }
-        }
-    }
-
-    function _buildRepayCalls(Receipt[] calldata receipts, address payer)
-        internal
-        pure
-        returns (IVault.TransferCall[] memory calls)
-    {
-        calls = new IVault.TransferCall[](receipts.length);
-        for (uint256 i = 0; i < receipts.length;) {
-            calls[i] = IVault.TransferCall({
-                callType: IVault.TransferType.Receive,
-                toBucket: IVault.Bucket.Redeem,
-                fromBucket: IVault.Bucket.Borrow,
-                asset: receipts[i].asset,
-                user: payer,
                 amount: receipts[i].amount
             });
             unchecked {
@@ -259,49 +242,16 @@ abstract contract Dispatch is IController {
         }
     }
 
-    function _buildPaymentTransferCalls(Receipt[] calldata receipts, address payer)
+    function _buildPaymentCalls(Receipt[] calldata receipts, address payer)
         internal
         view
-        returns (IVault.TransferCall[] memory calls)
-    {
-        calls = new IVault.TransferCall[](receipts.length * 2);
-        for (uint256 i = 0; i < receipts.length;) {
-            uint256 protocolFee = _mulDivUp(receipts[i].amount, AUCTION_FEE_BPS, BPS);
-            uint256 offset = i * 2;
-
-            calls[offset] = IVault.TransferCall({
-                callType: IVault.TransferType.Receive,
-                toBucket: IVault.Bucket.Treasury,
-                fromBucket: IVault.Bucket.None,
-                asset: receipts[i].asset,
-                user: payer,
-                amount: receipts[i].amount
-            });
-
-            calls[offset + 1] = IVault.TransferCall({
-                callType: IVault.TransferType.Send,
-                toBucket: IVault.Bucket.None,
-                fromBucket: IVault.Bucket.Treasury,
-                asset: receipts[i].asset,
-                user: PROTOCOL_COLLECTOR,
-                amount: protocolFee
-            });
-
-            unchecked {
-                i++;
-            }
-        }
-    }
-
-    function _buildPaymentCreditCalls(Receipt[] calldata receipts)
-        internal
-        view
-        returns (IVault.CreditCall[] memory calls)
+        returns (IVault.TransferCall[] memory transferCalls, IVault.CreditCall[] memory creditCalls)
     {
         uint256 teamBps = uint256(KERNEL.viewData(Slots.TEAM_PERCENTAGE_SLOT));
         uint256 treasuryBps = uint256(KERNEL.viewData(Slots.TREASURY_PERCENTAGE_SLOT));
 
-        calls = new IVault.CreditCall[](receipts.length * 2);
+        transferCalls = new IVault.TransferCall[](receipts.length * 2);
+        creditCalls = new IVault.CreditCall[](receipts.length * 2);
         for (uint256 i = 0; i < receipts.length;) {
             uint256 protocolFee = _mulDivUp(receipts[i].amount, AUCTION_FEE_BPS, BPS);
             uint256 netAmount = receipts[i].amount - protocolFee;
@@ -310,11 +260,29 @@ abstract contract Dispatch is IController {
             uint256 backingAmount = netAmount - teamAmount - treasuryAmount;
             uint256 offset = i * 2;
 
-            calls[offset] = IVault.CreditCall({
+            transferCalls[offset] = IVault.TransferCall({
+                callType: IVault.TransferType.Receive,
+                toBucket: IVault.Bucket.Treasury,
+                fromBucket: IVault.Bucket.None,
+                asset: receipts[i].asset,
+                user: payer,
+                amount: receipts[i].amount
+            });
+
+            transferCalls[offset + 1] = IVault.TransferCall({
+                callType: IVault.TransferType.Send,
+                toBucket: IVault.Bucket.None,
+                fromBucket: IVault.Bucket.Treasury,
+                asset: receipts[i].asset,
+                user: PROTOCOL_COLLECTOR,
+                amount: protocolFee
+            });
+
+            creditCalls[offset] = IVault.CreditCall({
                 from: IVault.Bucket.Treasury, to: IVault.Bucket.Redeem, asset: receipts[i].asset, amount: backingAmount
             });
 
-            calls[offset + 1] = IVault.CreditCall({
+            creditCalls[offset + 1] = IVault.CreditCall({
                 from: IVault.Bucket.Treasury, to: IVault.Bucket.Team, asset: receipts[i].asset, amount: teamAmount
             });
 
@@ -324,40 +292,22 @@ abstract contract Dispatch is IController {
         }
     }
 
-    function _buildDeployCalls(Receipt[] calldata receipts, address target)
+    function _buildDeployOrRecallCalls(Receipt[] calldata receipts, address target, bool deploy)
         internal
         pure
         returns (IVault.TransferCall[] memory calls)
     {
+        IVault.TransferType callType = deploy ? IVault.TransferType.Send : IVault.TransferType.Receive;
+        IVault.Bucket toBucket = deploy ? IVault.Bucket.None : IVault.Bucket.Treasury;
+        IVault.Bucket fromBucket = deploy ? IVault.Bucket.Treasury : IVault.Bucket.None;
         calls = new IVault.TransferCall[](receipts.length);
         for (uint256 i = 0; i < receipts.length;) {
             calls[i] = IVault.TransferCall({
-                callType: IVault.TransferType.Send,
-                toBucket: IVault.Bucket.None,
-                fromBucket: IVault.Bucket.Treasury,
+                callType: callType,
+                toBucket: toBucket,
+                fromBucket: fromBucket,
                 asset: receipts[i].asset,
                 user: target,
-                amount: receipts[i].amount
-            });
-            unchecked {
-                i++;
-            }
-        }
-    }
-
-    function _buildRecallCalls(Receipt[] calldata receipts, address payer)
-        internal
-        pure
-        returns (IVault.TransferCall[] memory calls)
-    {
-        calls = new IVault.TransferCall[](receipts.length);
-        for (uint256 i = 0; i < receipts.length;) {
-            calls[i] = IVault.TransferCall({
-                callType: IVault.TransferType.Receive,
-                toBucket: IVault.Bucket.Treasury,
-                fromBucket: IVault.Bucket.None,
-                asset: receipts[i].asset,
-                user: payer,
                 amount: receipts[i].amount
             });
             unchecked {
@@ -387,17 +337,22 @@ abstract contract Dispatch is IController {
         }
     }
 
-    function _buildDepositCalls(Receipt[] calldata receipts, address target, uint256 collateralAmount, address token)
-        internal
-        pure
-        returns (IVault.TransferCall[] memory calls)
-    {
+    function _buildDepositOrWithdrawCalls(
+        Receipt[] calldata receipts,
+        address target,
+        uint256 collateralAmount,
+        address token,
+        bool deposit
+    ) internal pure returns (IVault.TransferCall[] memory calls) {
+        IVault.TransferType callType = deposit ? IVault.TransferType.Send : IVault.TransferType.Receive;
+        IVault.Bucket toBucket = deposit ? IVault.Bucket.Borrow : IVault.Bucket.Redeem;
+        IVault.Bucket fromBucket = deposit ? IVault.Bucket.Redeem : IVault.Bucket.Borrow;
         calls = new IVault.TransferCall[](receipts.length + 1);
         for (uint256 i = 0; i < receipts.length;) {
             calls[i] = IVault.TransferCall({
-                callType: IVault.TransferType.Send,
-                toBucket: IVault.Bucket.Borrow,
-                fromBucket: IVault.Bucket.Redeem,
+                callType: callType,
+                toBucket: toBucket,
+                fromBucket: fromBucket,
                 asset: receipts[i].asset,
                 user: target,
                 amount: receipts[i].amount
@@ -406,41 +361,10 @@ abstract contract Dispatch is IController {
                 i++;
             }
         }
-
         calls[receipts.length] = IVault.TransferCall({
-            callType: IVault.TransferType.Receive,
-            toBucket: IVault.Bucket.Collateral,
-            fromBucket: IVault.Bucket.None,
-            asset: token,
-            user: target,
-            amount: collateralAmount
-        });
-    }
-
-    function _buildWithdrawCalls(Receipt[] calldata receipts, address target, uint256 collateralAmount, address token)
-        internal
-        pure
-        returns (IVault.TransferCall[] memory calls)
-    {
-        calls = new IVault.TransferCall[](receipts.length + 1);
-        for (uint256 i = 0; i < receipts.length;) {
-            calls[i] = IVault.TransferCall({
-                callType: IVault.TransferType.Receive,
-                toBucket: IVault.Bucket.Redeem,
-                fromBucket: IVault.Bucket.Borrow,
-                asset: receipts[i].asset,
-                user: target,
-                amount: receipts[i].amount
-            });
-            unchecked {
-                i++;
-            }
-        }
-
-        calls[receipts.length] = IVault.TransferCall({
-            callType: IVault.TransferType.Send,
-            toBucket: IVault.Bucket.None,
-            fromBucket: IVault.Bucket.Collateral,
+            callType: deposit ? IVault.TransferType.Receive : IVault.TransferType.Send,
+            toBucket: deposit ? IVault.Bucket.Collateral : IVault.Bucket.None,
+            fromBucket: deposit ? IVault.Bucket.None : IVault.Bucket.Collateral,
             asset: token,
             user: target,
             amount: collateralAmount
@@ -482,21 +406,14 @@ abstract contract Dispatch is IController {
         backing = new uint256[](assets.length);
 
         for (uint256 i = 0; i < assets.length;) {
-            uint256 redeemableBackingAmount = uint256(KERNEL.viewData(_slot(Slots.BACKING_AMOUNT_SLOT, assets[i])));
+            uint256 redeemableBackingAmount =
+                uint256(KERNEL.viewData(Slots.slots(Slots.BACKING_AMOUNT_SLOT, assets[i])));
             uint256 borrowedBackingAmount =
-                uint256(KERNEL.viewData(_slot(Slots.ASSET_TOTAL_BORROWED_BASE_SLOT, assets[i])));
+                uint256(KERNEL.viewData(Slots.slots(Slots.ASSET_TOTAL_BORROWED_BASE_SLOT, assets[i])));
             backing[i] = redeemableBackingAmount + borrowedBackingAmount;
             unchecked {
                 i++;
             }
-        }
-    }
-
-    function _slot(bytes32 namespace, address asset) internal pure returns (bytes32 slot) {
-        assembly ("memory-safe") {
-            mstore(0x00, namespace)
-            mstore(0x20, and(asset, 0xffffffffffffffffffffffffffffffffffffffff))
-            slot := keccak256(0x00, 0x40)
         }
     }
 
