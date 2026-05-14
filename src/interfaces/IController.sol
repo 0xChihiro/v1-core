@@ -4,6 +4,7 @@ pragma solidity 0.8.34;
 import {Token} from "../Token.sol";
 import {Keycode, Actions} from "../Utils.sol";
 import {IVault} from "./IVault.sol";
+import {IKernel} from "./IKernel.sol";
 
 interface IController {
     enum Op {
@@ -57,6 +58,15 @@ interface IController {
     }
 
     function TOKEN() external view returns (Token);
+    function VAULT() external view returns (IVault);
+    function KERNEL() external view returns (IKernel);
+    function PROTOCOL_COLLECTOR() external view returns (address);
+
+    function CREDITOR_ROLE() external view returns (bytes32);
+    function EXECUTOR_ROLE() external view returns (bytes32);
+    function GUARDIAN_ROLE() external view returns (bytes32);
+    function MINT_PERMISSION_ROLE() external view returns (bytes32);
+
     function settle(Settlement[] calldata) external;
     function sync(address, IVault.Bucket) external;
     function getModuleForKeycode(Keycode) external view returns (address);
