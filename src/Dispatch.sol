@@ -377,7 +377,7 @@ abstract contract Dispatch is IController {
         view
         returns (uint256 totalSupply, uint256[] memory backing)
     {
-        totalSupply = TOKEN.totalSupply();
+        totalSupply = TOKEN.totalSupply() - uint256(KERNEL.viewData(Slots.TEAM_LOCKED_TOKENS_SLOT));
         if (totalSupply == 0) {
             backing = new uint256[](0);
             return (totalSupply, backing);

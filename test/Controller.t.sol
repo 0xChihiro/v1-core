@@ -1249,6 +1249,43 @@ contract ControllerTest is Test {
         assertEq(_bucketValue(IVault.Bucket.Redeem, address(asset)), INITIAL_SUPPLY);
     }
 
+    function testSettleLockedTeamTokensAreExcludedFromBackingSupply() public {
+        uint256 lockedTeamTokens = 250 ether;
+        _seedBacking(INITIAL_SUPPLY - lockedTeamTokens);
+        _setRawSlot(Slots.TEAM_LOCKED_TOKENS_SLOT, bytes32(lockedTeamTokens));
+
+        IController.Settlement[] memory settlements =
+            _singleSettlement(IController.StateTransitions.StateUpdate, 0, new IController.Receipt[](0));
+        settlements[0].singleStateUpdates =
+            _oneStateUpdate(IController.Op.Sub, Slots.TEAM_LOCKED_TOKENS_SLOT, bytes32(uint256(100 ether)));
+
+        SystemState memory beforeState = _snapshot(Slots.TEAM_LOCKED_TOKENS_SLOT, bytes32(0));
+
+        vm.expectRevert(IController.Controller__BackingWentDown.selector);
+        module.settle(settlements);
+
+        _assertStateUnchanged(beforeState, Slots.TEAM_LOCKED_TOKENS_SLOT, bytes32(0));
+    }
+
+    function testSettleBurnCanUnlockTeamTokensWithoutLoweringBackingRatio() public {
+        uint256 lockedTeamTokens = 250 ether;
+        uint256 unlockAmount = 100 ether;
+        _seedBacking(INITIAL_SUPPLY - lockedTeamTokens);
+        _setRawSlot(Slots.TEAM_LOCKED_TOKENS_SLOT, bytes32(lockedTeamTokens));
+
+        IController.Settlement[] memory settlements =
+            _singleSettlement(IController.StateTransitions.Burn, unlockAmount, new IController.Receipt[](0));
+        settlements[0].singleStateUpdates =
+            _oneStateUpdate(IController.Op.Sub, Slots.TEAM_LOCKED_TOKENS_SLOT, bytes32(unlockAmount));
+
+        module.settle(settlements);
+
+        assertEq(token.balanceOf(user), INITIAL_SUPPLY - unlockAmount);
+        assertEq(token.totalSupply(), INITIAL_SUPPLY - unlockAmount);
+        assertEq(uint256(kernel.viewData(Slots.TEAM_LOCKED_TOKENS_SLOT)), lockedTeamTokens - unlockAmount);
+        assertEq(_bucketValue(IVault.Bucket.Redeem, address(asset)), INITIAL_SUPPLY - lockedTeamTokens);
+    }
+
     function testSettleStateUpdateAppliesSingleAndMultiKernelUpdates() public {
         bytes32 addSubSlot = keccak256("controller.test.add-sub");
         bytes32 setSlot = keccak256("controller.test.set");

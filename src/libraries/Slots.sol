@@ -18,6 +18,7 @@ library Slots {
     bytes32 internal constant TREASURY_PERCENTAGE_SLOT = keccak256("enten.token.treasury.percentage");
     bytes32 internal constant ASSETS_LENGTH_SLOT = keccak256("enten.token.assets.length");
     bytes32 internal constant ASSETS_BASE_SLOT = keccak256("enten.token.assets");
+    bytes32 internal constant TEAM_LOCKED_TOKENS_SLOT = keccak256("enten.team.locked.tokens");
 
     // Borrow Slots
     bytes32 internal constant USER_POSITION_BASE_SLOT = keccak256("enten.borrow.user.position");
