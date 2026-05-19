@@ -67,6 +67,12 @@ interface IController {
     function GUARDIAN_ROLE() external view returns (bytes32);
     function MINT_PERMISSION_ROLE() external view returns (bytes32);
 
+    function executeAction(Actions action, address target) external;
+    function credit(address asset, uint256 amount, IVault.Bucket to, IVault.Bucket from) external;
+    function credits(IVault.CreditCall[] calldata calls) external;
+    function setMintPermission(Keycode module, bool allowed) external;
+    function setModuleDisabled(Keycode module, bool disabled) external;
+    function setSettlementsPaused(bool paused) external;
     function settle(Settlement[] calldata) external;
     function sync(address, IVault.Bucket) external;
     function getModuleForKeycode(Keycode) external view returns (address);
