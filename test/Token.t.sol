@@ -2,6 +2,7 @@
 pragma solidity 0.8.34;
 
 import {Token} from "../src/Token.sol";
+import {IToken} from "../src/interfaces/IToken.sol";
 import {Test} from "forge-std/Test.sol";
 
 contract TokenTest is Test {
@@ -15,14 +16,15 @@ contract TokenTest is Test {
 
     function testConstructorSetsLaunchParametersWithoutPreMine() public {
         Token token = new Token("Enten", "ENTEN", controller, address(0), 0, MAX_SUPPLY);
+        IToken tokenView = IToken(address(token));
 
-        assertEq(token.name(), "Enten");
-        assertEq(token.symbol(), "ENTEN");
-        assertEq(token.decimals(), 18);
-        assertEq(token.CONTROLLER(), controller);
-        assertEq(token.MAX_SUPPLY(), MAX_SUPPLY);
-        assertEq(token.totalSupply(), 0);
-        assertEq(token.balanceOf(preMineReceiver), 0);
+        assertEq(tokenView.name(), "Enten");
+        assertEq(tokenView.symbol(), "ENTEN");
+        assertEq(tokenView.decimals(), 18);
+        assertEq(tokenView.CONTROLLER(), controller);
+        assertEq(tokenView.MAX_SUPPLY(), MAX_SUPPLY);
+        assertEq(tokenView.totalSupply(), 0);
+        assertEq(tokenView.balanceOf(preMineReceiver), 0);
     }
 
     function testConstructorMintsPreMineAndUsesItAsInitialSupply() public {

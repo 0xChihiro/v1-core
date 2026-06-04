@@ -27,6 +27,7 @@ contract Vault is IVault {
     error Vault__OnlyController();
     error Vault__InvalidTransferType();
     error Vault__CannotSyncToken();
+    error Vault__InsufficientBalance(address asset, uint256 actualBalance, uint256 accountedBalance);
 
     constructor(address controller, address kernel) {
         if (controller == address(0) || kernel == address(0)) revert Vault__MisconfiguredSetup();
@@ -60,8 +61,8 @@ contract Vault is IVault {
                 revert Vault__InvalidTransferType();
             }
 
-            // If the from bucket is not none we know that we have to pull from a different bucket in the system
-            // Therefore we create a sub call to update the accounting in the Kernel.
+            // If the from bucket is not None, pull from a different bucket in the system.
+            // Therefore, create a sub call to update the accounting in the Kernel.
             if (call.fromBucket != Bucket.None) {
                 subCalls[subIndex] =
                     IKernel.KernelCall({slot: _bucketSlot(call.fromBucket, call.asset), data: bytes32(call.amount)});
@@ -70,8 +71,8 @@ contract Vault is IVault {
                 }
             }
 
-            // If the to bucket it not none we will be adding to a bucket
-            // So we add a Kernel add call
+            // If the to bucket is not None, add to a bucket.
+            // Therefore, create a Kernel add call.
             if (call.toBucket != Bucket.None) {
                 addCalls[addIndex] =
                     IKernel.KernelCall({slot: _bucketSlot(call.toBucket, call.asset), data: bytes32(call.amount)});
@@ -91,7 +92,7 @@ contract Vault is IVault {
             mstore(subCalls, subIndex)
         }
 
-        // Update the balances in the effected buckets
+        // Update the balances in the affected buckets
         if (addIndex != 0) KERNEL.add(addCalls);
         if (subIndex != 0) KERNEL.sub(subCalls);
 
@@ -143,7 +144,7 @@ contract Vault is IVault {
         _ensureCoreBucket(bucket);
         if (asset == address(IController(CONTROLLER).TOKEN())) revert Vault__CannotSyncToken();
         uint256 actualBalance = IERC20(asset).balanceOf(address(this));
-        uint256 accounted = _accountedBalance(asset);
+        uint256 accounted = _heldAccountedBalance(asset);
 
         if (actualBalance <= accounted) revert Vault__NoSurplus();
 
@@ -154,33 +155,49 @@ contract Vault is IVault {
     }
 
     // ---------------------- VIEW FUNCTIONS ------------------------------------ \\
-    function _accountedBalance(address asset) internal view returns (uint256 total) {
+    function validateBalances(address[] calldata assets_) external view {
+        for (uint256 i = 0; i < assets_.length;) {
+            address asset = assets_[i];
+            uint256 actualBalance = IERC20(asset).balanceOf(address(this));
+            uint256 accountedBalance = _heldAccountedBalance(asset);
+            if (actualBalance < accountedBalance) {
+                revert Vault__InsufficientBalance(asset, actualBalance, accountedBalance);
+            }
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    function _heldAccountedBalance(address asset) internal view returns (uint256 total) {
         total = uint256(KERNEL.viewData(_backingAmountSlot(asset)))
-            + uint256(KERNEL.viewData(_treasuryAmountSlot(asset))) + uint256(KERNEL.viewData(_teamAmountSlot(asset)));
+            + uint256(KERNEL.viewData(_treasuryAmountSlot(asset))) + uint256(KERNEL.viewData(_teamAmountSlot(asset)))
+            + uint256(KERNEL.viewData(_bucketSlot(Bucket.Collateral, asset)));
     }
 
     function backingBalances() external view returns (IVault.AssetBalance[] memory) {
         return _readAssetBalances(Slots.BACKING_AMOUNT_SLOT);
     }
 
+    function assets() external view returns (address[] memory) {
+        return _assets();
+    }
+
+    function bucketBalance(Bucket bucket, address asset) external view returns (uint256) {
+        return uint256(KERNEL.viewData(_bucketSlot(bucket, asset)));
+    }
+
+    function bucketBalances(Bucket bucket) external view returns (AssetBalance[] memory) {
+        return _readAssetBalances(_bucketNamespace(bucket));
+    }
+
+    function bucketBalances(Bucket bucket, address[] calldata assets_) external view returns (AssetBalance[] memory) {
+        return _readAssetBalances(_bucketNamespace(bucket), assets_);
+    }
+
     // View treasury balances for arbitrary assets, including assets not added through the controller.
-    function treasuryBalances(address[] calldata assets) external view returns (AssetBalance[] memory values) {
-        values = new AssetBalance[](assets.length);
-        bytes32[] memory slots = new bytes32[](assets.length);
-        for (uint256 i = 0; i < assets.length;) {
-            slots[i] = _bucketSlot(Bucket.Treasury, assets[i]);
-            unchecked {
-                i++;
-            }
-        }
-        bytes32[] memory amounts = KERNEL.viewData(slots);
-        for (uint256 i = 0; i < amounts.length;) {
-            values[i].asset = assets[i];
-            values[i].amount = uint256(amounts[i]);
-            unchecked {
-                i++;
-            }
-        }
+    function treasuryBalances(address[] calldata assets_) external view returns (AssetBalance[] memory) {
+        return _readAssetBalances(Slots.TREASURY_AMOUNT_SLOT, assets_);
     }
 
     function treasuryBalances() external view returns (IVault.AssetBalance[] memory) {
@@ -211,26 +228,40 @@ contract Vault is IVault {
     }
 
     function _bucketSlot(Bucket bucket, address asset) internal pure returns (bytes32 slot) {
-        bytes32 namespace;
-
-        if (bucket == Bucket.Borrow) {
-            namespace = Slots.ASSET_TOTAL_BORROWED_BASE_SLOT;
-        } else if (bucket == Bucket.Redeem) {
-            namespace = Slots.BACKING_AMOUNT_SLOT;
-        } else if (bucket == Bucket.Treasury) {
-            namespace = Slots.TREASURY_AMOUNT_SLOT;
-        } else if (bucket == Bucket.Team) {
-            namespace = Slots.TEAM_AMOUNT_SLOT;
-        } else if (bucket == Bucket.Collateral) {
-            namespace = Slots.TOTAL_COLLATERL_SLOT;
-        } else {
-            revert Vault__InvalidBucket();
-        }
+        bytes32 namespace = _bucketNamespace(bucket);
 
         assembly ("memory-safe") {
             mstore(0x00, namespace)
             mstore(0x20, and(asset, 0xffffffffffffffffffffffffffffffffffffffff))
             slot := keccak256(0x00, 0x40)
+        }
+    }
+
+    function _bucketNamespace(Bucket bucket) internal pure returns (bytes32) {
+        if (bucket == Bucket.Borrow) return Slots.ASSET_TOTAL_BORROWED_BASE_SLOT;
+        if (bucket == Bucket.Redeem) return Slots.BACKING_AMOUNT_SLOT;
+        if (bucket == Bucket.Treasury) return Slots.TREASURY_AMOUNT_SLOT;
+        if (bucket == Bucket.Team) return Slots.TEAM_AMOUNT_SLOT;
+        if (bucket == Bucket.Collateral) return Slots.TOTAL_COLLATERAL_SLOT;
+        revert Vault__InvalidBucket();
+    }
+
+    function _assets() internal view returns (address[] memory values) {
+        uint256 assetCount = uint256(KERNEL.viewData(Slots.ASSETS_LENGTH_SLOT));
+        values = new address[](assetCount);
+        if (assetCount == 0) return values;
+
+        bytes memory rawAssets = KERNEL.viewData(Slots.ASSETS_BASE_SLOT, assetCount);
+        for (uint256 i = 0; i < assetCount;) {
+            assembly ("memory-safe") {
+                mstore(
+                    add(add(values, 0x20), shl(5, i)),
+                    and(mload(add(add(rawAssets, 0x20), shl(5, i))), 0xffffffffffffffffffffffffffffffffffffffff)
+                )
+            }
+            unchecked {
+                ++i;
+            }
         }
     }
 
@@ -268,6 +299,35 @@ contract Vault is IVault {
         bytes32[] memory responses = KERNEL.viewData(slots);
         for (uint256 i = 0; i < assetCount;) {
             values[i].amount = uint256(responses[i]);
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    function _readAssetBalances(bytes32 namespace, address[] memory assets_)
+        internal
+        view
+        returns (IVault.AssetBalance[] memory values)
+    {
+        values = new AssetBalance[](assets_.length);
+        bytes32[] memory slots = new bytes32[](assets_.length);
+        for (uint256 i = 0; i < assets_.length;) {
+            values[i].asset = assets_[i];
+            address asset = assets_[i];
+            assembly ("memory-safe") {
+                mstore(0x00, namespace)
+                mstore(0x20, and(asset, 0xffffffffffffffffffffffffffffffffffffffff))
+                mstore(add(add(slots, 0x20), shl(5, i)), keccak256(0x00, 0x40))
+            }
+            unchecked {
+                ++i;
+            }
+        }
+
+        bytes32[] memory amounts = KERNEL.viewData(slots);
+        for (uint256 i = 0; i < amounts.length;) {
+            values[i].amount = uint256(amounts[i]);
             unchecked {
                 ++i;
             }

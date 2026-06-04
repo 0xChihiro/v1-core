@@ -2,31 +2,12 @@
 pragma solidity 0.8.34;
 
 import {CREATE3} from "../libraries/CREATE3.sol";
+import {IController} from "../interfaces/IController.sol";
 import {IControllerFactory} from "../interfaces/IControllerFactory.sol";
-
-interface IKernelDeploymentView {
-    function CONTROLLER() external view returns (address);
-    function VAULT() external view returns (address);
-}
-
-interface IVaultDeploymentView {
-    function CONTROLLER() external view returns (address);
-    function KERNEL() external view returns (address);
-}
-
-interface ITokenDeploymentView {
-    function CONTROLLER() external view returns (address);
-}
-
-interface IControllerDeploymentView {
-    function KERNEL() external view returns (address);
-    function VAULT() external view returns (address);
-    function TOKEN() external view returns (address);
-    function PROTOCOL_COLLECTOR() external view returns (address);
-    function EXECUTOR_ROLE() external view returns (bytes32);
-    function MINT_PERMISSION_ROLE() external view returns (bytes32);
-    function hasRole(bytes32 role, address account) external view returns (bool);
-}
+import {IDefaultAdminRole} from "../interfaces/IDefaultAdminRole.sol";
+import {IKernel} from "../interfaces/IKernel.sol";
+import {IToken} from "../interfaces/IToken.sol";
+import {IVault} from "../interfaces/IVault.sol";
 
 contract ControllerFactory is IControllerFactory {
     bytes32 private constant CONTROLLER_LABEL = keccak256("CONTROLLER");
@@ -35,13 +16,13 @@ contract ControllerFactory is IControllerFactory {
     bytes32 private constant TOKEN_LABEL = keccak256("TOKEN");
 
     bytes32 private constant CONTROLLER_CREATION_CODE_HASH =
-        0x1e5c75d15caadf75c3ae85317b054901448313f51879aa91cb03010670cf008d;
+        0x8dc4eaa3bc1b513253313785e969fba4054bd6b02771191107b0895270a224b7;
     bytes32 private constant KERNEL_CREATION_CODE_HASH =
-        0x69f3aaf07aad1ce5b4e9a4755b2a07413d0c9d6c69f1173688deeaf66bd1f049;
+        0xd1fac095a5bf7dd6bdc2a2dabdaa1b960207a13a1ea1aecfb1a03afb5f26aa2d;
     bytes32 private constant VAULT_CREATION_CODE_HASH =
-        0xf87520fb834447fca50d2ce639339d0d41d43e7bc7af3f12ccbb98a4c0fb7490;
+        0x557e8b2523be111669ab918c4eda88446440631173a7bd5c45554272fa2210a3;
     bytes32 private constant TOKEN_CREATION_CODE_HASH =
-        0x773eb04c6db7e07dc39cac846012a96079dd40446acf07f011710d888675d5c5;
+        0xc57994eb8387790d3f3d08829fe368a339cbd16bb76f780bfef4c3e675304a96;
 
     address public immutable PROTOCOL_COLLECTOR;
     address public immutable CONTROLLER_CODE_STORE;
@@ -105,42 +86,41 @@ contract ControllerFactory is IControllerFactory {
     }
 
     function _validateDeployment(Deployment memory deployment, address admin) internal view {
-        if (IControllerDeploymentView(deployment.controller).KERNEL() != deployment.kernel) {
+        IController controller = IController(deployment.controller);
+        if (address(controller.KERNEL()) != deployment.kernel) {
             revert ControllerFactory__InvalidDeployment();
         }
-        if (IControllerDeploymentView(deployment.controller).VAULT() != deployment.vault) {
+        if (address(controller.VAULT()) != deployment.vault) {
             revert ControllerFactory__InvalidDeployment();
         }
-        if (IControllerDeploymentView(deployment.controller).TOKEN() != deployment.token) {
+        if (address(controller.TOKEN()) != deployment.token) {
             revert ControllerFactory__InvalidDeployment();
         }
-        if (IControllerDeploymentView(deployment.controller).PROTOCOL_COLLECTOR() != PROTOCOL_COLLECTOR) {
+        if (controller.PROTOCOL_COLLECTOR() != PROTOCOL_COLLECTOR) {
             revert ControllerFactory__InvalidDeployment();
         }
-        if (!IControllerDeploymentView(deployment.controller).hasRole(bytes32(0), admin)) {
+        if (!controller.hasRole(IDefaultAdminRole(deployment.controller).DEFAULT_ADMIN_ROLE(), admin)) {
             revert ControllerFactory__InvalidDeployment();
         }
-        if (!IControllerDeploymentView(deployment.controller)
-                .hasRole(IControllerDeploymentView(deployment.controller).EXECUTOR_ROLE(), admin)) {
+        if (!controller.hasRole(controller.EXECUTOR_ROLE(), admin)) {
             revert ControllerFactory__InvalidDeployment();
         }
-        if (!IControllerDeploymentView(deployment.controller)
-                .hasRole(IControllerDeploymentView(deployment.controller).MINT_PERMISSION_ROLE(), admin)) {
+        if (!controller.hasRole(controller.MINT_PERMISSION_ROLE(), admin)) {
             revert ControllerFactory__InvalidDeployment();
         }
-        if (IKernelDeploymentView(deployment.kernel).CONTROLLER() != deployment.controller) {
+        if (IKernel(deployment.kernel).CONTROLLER() != deployment.controller) {
             revert ControllerFactory__InvalidDeployment();
         }
-        if (IKernelDeploymentView(deployment.kernel).VAULT() != deployment.vault) {
+        if (IKernel(deployment.kernel).VAULT() != deployment.vault) {
             revert ControllerFactory__InvalidDeployment();
         }
-        if (IVaultDeploymentView(deployment.vault).CONTROLLER() != deployment.controller) {
+        if (IVault(deployment.vault).CONTROLLER() != deployment.controller) {
             revert ControllerFactory__InvalidDeployment();
         }
-        if (IVaultDeploymentView(deployment.vault).KERNEL() != deployment.kernel) {
+        if (address(IVault(deployment.vault).KERNEL()) != deployment.kernel) {
             revert ControllerFactory__InvalidDeployment();
         }
-        if (ITokenDeploymentView(deployment.token).CONTROLLER() != deployment.controller) {
+        if (IToken(deployment.token).CONTROLLER() != deployment.controller) {
             revert ControllerFactory__InvalidDeployment();
         }
     }

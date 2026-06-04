@@ -6,6 +6,7 @@ import {Kernel} from "../src/Kernel.sol";
 import {ProtocolCollector} from "../src/ProtocolCollector.sol";
 import {Token} from "../src/Token.sol";
 import {Vault} from "../src/Vault.sol";
+import {IProtocolCollector} from "../src/interfaces/IProtocolCollector.sol";
 import {IVault} from "../src/interfaces/IVault.sol";
 import {Slots} from "../src/libraries/Slots.sol";
 import {ERC20Mock} from "openzeppelin/contracts/mocks/token/ERC20Mock.sol";
@@ -54,8 +55,13 @@ contract ProtocolCollectorTest is Test {
         vm.prank(admin);
         collector.setControllerAndVault(address(controller), address(vault));
 
-        assertEq(address(collector.controller()), address(controller));
-        assertEq(collector.vault(), address(vault));
+        IProtocolCollector collectorView = IProtocolCollector(address(collector));
+        assertEq(address(collectorView.controller()), address(controller));
+        assertEq(collectorView.vault(), address(vault));
+        assertEq(collectorView.DEFAULT_ADMIN_ROLE(), collector.DEFAULT_ADMIN_ROLE());
+        assertEq(collectorView.ADD_BACKING_ROLE(), collector.ADD_BACKING_ROLE());
+        assertEq(collectorView.ADD_TREASURY_ROLE(), collector.ADD_TREASURY_ROLE());
+        assertTrue(collectorView.hasRole(collectorView.DEFAULT_ADMIN_ROLE(), admin));
 
         vm.prank(admin);
         vm.expectRevert(ProtocolCollector.ProtocolCollector__AddressesSet.selector);

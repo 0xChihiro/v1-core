@@ -23,7 +23,7 @@ library Slots {
     // Borrow Slots
     bytes32 internal constant USER_POSITION_BASE_SLOT = keccak256("enten.borrow.user.position");
     bytes32 internal constant ASSET_TOTAL_BORROWED_BASE_SLOT = keccak256("enten.borrow.asset.borrowed");
-    bytes32 internal constant TOTAL_COLLATERL_SLOT = keccak256("enten.borrow.total.collateral");
+    bytes32 internal constant TOTAL_COLLATERAL_SLOT = keccak256("enten.borrow.total.collateral");
 
     function slots(bytes32 namespace, address asset) internal pure returns (bytes32 slot) {
         assembly ("memory-safe") {

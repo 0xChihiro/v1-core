@@ -1,7 +1,7 @@
 ///SPDX-License-Identifier: MIT
 pragma solidity 0.8.34;
 
-import {Token} from "./Token.sol";
+import {IToken} from "./interfaces/IToken.sol";
 import {IController} from "./interfaces/IController.sol";
 import {IKernel} from "./interfaces/IKernel.sol";
 import {IVault} from "./interfaces/IVault.sol";
@@ -16,16 +16,12 @@ abstract contract Dispatch is IController {
 
     IKernel public immutable KERNEL;
     IVault public immutable VAULT;
-    Token public immutable TOKEN;
+    IToken public immutable TOKEN;
     address public immutable PROTOCOL_COLLECTOR;
 
     mapping(Keycode => bool) public mintPermissions;
     mapping(Keycode => bool) public moduleDisabled;
     bool public settlementsPaused;
-
-    event Controller__Settled(address indexed module, Settlement settlement);
-
-    error Controller__Locked();
 
     bool private locked;
 
@@ -40,7 +36,7 @@ abstract contract Dispatch is IController {
         PROTOCOL_COLLECTOR = protocolCollector;
         KERNEL = IKernel(kernel);
         VAULT = IVault(vault);
-        TOKEN = Token(token);
+        TOKEN = IToken(token);
     }
 
     function _getModuleKeycode(Module module_) internal view virtual returns (Keycode);
@@ -78,6 +74,7 @@ abstract contract Dispatch is IController {
         (uint256 endingSupply, uint256[] memory endingBacking) = _backingSnapshot(assets);
 
         _validateBacking(startingSupply, startingBacking, endingSupply, endingBacking);
+        VAULT.validateBalances(assets);
     }
 
     function _dispatchSettlement(Settlement calldata settlement, Keycode moduleKeycode)
@@ -135,10 +132,34 @@ abstract contract Dispatch is IController {
                 if (settlement.singleStateUpdates.length == 0 && settlement.multiStateUpdates.length == 0) {
                     revert Controller__NoUpdatesGiven();
                 }
+            } else if (transition == uint8(StateTransitions.ExternalCall)) {
+                _executeExternalCalls(settlement.externalCalls);
             } else {
                 revert Controller__InvalidStateUpdate();
             }
         }
+    }
+
+    function _executeExternalCalls(ExternalCall[] calldata calls) internal {
+        for (uint256 i = 0; i < calls.length;) {
+            ExternalCall calldata externalCall = calls[i];
+            _ensureTargetContract(externalCall.target);
+
+            (bool success, bytes memory returnData) = externalCall.target.call(externalCall.data);
+            if (!success) {
+                assembly ("memory-safe") {
+                    revert(add(returnData, 0x20), mload(returnData))
+                }
+            }
+
+            unchecked {
+                i++;
+            }
+        }
+    }
+
+    function _ensureTargetContract(address target) internal view {
+        if (target.code.length == 0) revert Controller__TargetNotAContract(target);
     }
 
     function _applyMultiStateUpdates(StateUpdates[] calldata updates) internal {

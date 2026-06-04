@@ -29,7 +29,7 @@ abstract contract Policy is ControllerAdapter {
     /// @return dependencies - Keycode array of module dependencies.
     function configureDependencies() external virtual returns (Keycode[] memory dependencies) {}
 
-    /// @notice Function called by kernel to set module function permissions.
+    /// @notice Function called by the controller to set module function permissions.
     /// @return requests - Array of keycodes and function selectors for requested permissions.
     function requestPermissions() external view virtual returns (Permissions[] memory requests) {}
 }

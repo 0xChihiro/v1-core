@@ -7,13 +7,6 @@ import {IERC20} from "openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IVault} from "./interfaces/IVault.sol";
 
-interface IProtocolCollectorControllerView {
-    function VAULT() external view returns (address);
-    function PROTOCOL_COLLECTOR() external view returns (address);
-    function CREDITOR_ROLE() external view returns (bytes32);
-    function hasRole(bytes32 role, address account) external view returns (bool);
-}
-
 contract ProtocolCollector is AccessControl {
     using SafeERC20 for IERC20;
 
@@ -51,7 +44,7 @@ contract ProtocolCollector is AccessControl {
         IController controllerView = IController(_controller);
         if (address(controllerView.VAULT()) != _vault) revert ProtocolCollector__MisconfiguredSetup();
         if (controllerView.PROTOCOL_COLLECTOR() != address(this)) revert ProtocolCollector__MisconfiguredSetup();
-        if (!AccessControl(address(controllerView)).hasRole(controllerView.CREDITOR_ROLE(), address(this))) {
+        if (!controllerView.hasRole(controllerView.CREDITOR_ROLE(), address(this))) {
             revert ProtocolCollector__MisconfiguredSetup();
         }
 

@@ -12,7 +12,7 @@ abstract contract ControllerAdapter {
         CONTROLLER = IController(controller);
     }
 
-    /// @notice Modifier to restrict functions to be called only by kernel.
+    /// @notice Modifier to restrict functions to be called only by the controller.
     modifier onlyController() {
         if (msg.sender != address(CONTROLLER)) revert ControllerAdapter__OnlyController(msg.sender);
         _;

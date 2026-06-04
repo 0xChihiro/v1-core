@@ -86,7 +86,7 @@ contract VaultTest is Test {
         );
         assertEq(
             slotHarness.exposedBucketSlot(IVault.Bucket.Collateral, address(asset)),
-            _slot(Slots.TOTAL_COLLATERL_SLOT, address(asset))
+            _slot(Slots.TOTAL_COLLATERAL_SLOT, address(asset))
         );
 
         vm.expectRevert(Vault.Vault__InvalidBucket.selector);
@@ -925,6 +925,51 @@ contract VaultTest is Test {
         assertEq(_bucketValue(IVault.Bucket.Team, address(asset)), 20);
     }
 
+    function testSyncSurplusDoesNotDoubleCountCollateral() public {
+        asset.mint(address(vault), 100);
+        _setBucket(IVault.Bucket.Collateral, address(asset), 100);
+
+        vm.prank(controller);
+        vm.expectRevert(Vault.Vault__NoSurplus.selector);
+        vault.syncSurplus(address(asset), IVault.Bucket.Redeem);
+
+        asset.mint(address(vault), 1);
+
+        vm.prank(controller);
+        vault.syncSurplus(address(asset), IVault.Bucket.Treasury);
+
+        assertEq(_bucketValue(IVault.Bucket.Collateral, address(asset)), 100);
+        assertEq(_bucketValue(IVault.Bucket.Treasury, address(asset)), 1);
+    }
+
+    function testValidateBalancesCoversHeldBucketsAndExcludesBorrow() public {
+        address[] memory assets = new address[](1);
+        assets[0] = address(asset);
+        asset.mint(address(vault), 100);
+        _setBucket(IVault.Bucket.Borrow, address(asset), type(uint256).max);
+        _setBucket(IVault.Bucket.Redeem, address(asset), 10);
+        _setBucket(IVault.Bucket.Treasury, address(asset), 20);
+        _setBucket(IVault.Bucket.Team, address(asset), 30);
+        _setBucket(IVault.Bucket.Collateral, address(asset), 40);
+
+        vault.validateBalances(assets);
+    }
+
+    function testValidateBalancesRejectsInsufficientCustody() public {
+        address[] memory assets = new address[](1);
+        assets[0] = address(asset);
+        asset.mint(address(vault), 99);
+        _setBucket(IVault.Bucket.Redeem, address(asset), 10);
+        _setBucket(IVault.Bucket.Treasury, address(asset), 20);
+        _setBucket(IVault.Bucket.Team, address(asset), 30);
+        _setBucket(IVault.Bucket.Collateral, address(asset), 40);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(Vault.Vault__InsufficientBalance.selector, address(asset), uint256(99), uint256(100))
+        );
+        vault.validateBalances(assets);
+    }
+
     function testSyncSurplusRejectsProtocolToken() public {
         protocolToken.mint(address(vault), 100);
         _setBucket(IVault.Bucket.Collateral, address(protocolToken), 100);
@@ -987,6 +1032,51 @@ contract VaultTest is Test {
         assertEq(team[0].amount, 0);
         assertEq(team[1].asset, address(secondAsset));
         assertEq(team[1].amount, 44);
+    }
+
+    function testVaultInterfaceExposesAssetsAndGenericBucketViews() public {
+        IVault vaultView = IVault(address(vault));
+        _setAssets(address(asset), address(secondAsset));
+        _setBucket(IVault.Bucket.Borrow, address(asset), 11);
+        _setBucket(IVault.Bucket.Redeem, address(secondAsset), 22);
+        _setBucket(IVault.Bucket.Treasury, address(asset), 33);
+        _setBucket(IVault.Bucket.Team, address(secondAsset), 44);
+        _setBucket(IVault.Bucket.Collateral, address(asset), 55);
+
+        address[] memory configuredAssets = vaultView.assets();
+        assertEq(configuredAssets.length, 2);
+        assertEq(configuredAssets[0], address(asset));
+        assertEq(configuredAssets[1], address(secondAsset));
+        assertEq(vaultView.bucketBalance(IVault.Bucket.Borrow, address(asset)), 11);
+        assertEq(vaultView.bucketBalance(IVault.Bucket.Redeem, address(secondAsset)), 22);
+        assertEq(vaultView.bucketBalance(IVault.Bucket.Treasury, address(asset)), 33);
+        assertEq(vaultView.bucketBalance(IVault.Bucket.Team, address(secondAsset)), 44);
+        assertEq(vaultView.bucketBalance(IVault.Bucket.Collateral, address(asset)), 55);
+
+        IVault.AssetBalance[] memory configuredCollateral = vaultView.bucketBalances(IVault.Bucket.Collateral);
+        assertEq(configuredCollateral.length, 2);
+        assertEq(configuredCollateral[0].asset, address(asset));
+        assertEq(configuredCollateral[0].amount, 55);
+        assertEq(configuredCollateral[1].asset, address(secondAsset));
+        assertEq(configuredCollateral[1].amount, 0);
+
+        address[] memory requestedAssets = new address[](3);
+        requestedAssets[0] = address(secondAsset);
+        requestedAssets[1] = address(asset);
+        requestedAssets[2] = address(secondAsset);
+        IVault.AssetBalance[] memory requestedRedeem = vaultView.bucketBalances(IVault.Bucket.Redeem, requestedAssets);
+        assertEq(requestedRedeem.length, 3);
+        assertEq(requestedRedeem[0].asset, address(secondAsset));
+        assertEq(requestedRedeem[0].amount, 22);
+        assertEq(requestedRedeem[1].asset, address(asset));
+        assertEq(requestedRedeem[1].amount, 0);
+        assertEq(requestedRedeem[2].asset, address(secondAsset));
+        assertEq(requestedRedeem[2].amount, 22);
+
+        vm.expectRevert(Vault.Vault__InvalidBucket.selector);
+        vaultView.bucketBalance(IVault.Bucket.None, address(asset));
+        vm.expectRevert(Vault.Vault__InvalidBucket.selector);
+        vaultView.bucketBalances(IVault.Bucket.None);
     }
 
     function testTreasuryBalancesCanReadRequestedNonBackedAssets() public {
@@ -1172,7 +1262,7 @@ contract VaultTest is Test {
         if (bucket == IVault.Bucket.Redeem) return _slot(Slots.BACKING_AMOUNT_SLOT, token);
         if (bucket == IVault.Bucket.Treasury) return _slot(Slots.TREASURY_AMOUNT_SLOT, token);
         if (bucket == IVault.Bucket.Team) return _slot(Slots.TEAM_AMOUNT_SLOT, token);
-        if (bucket == IVault.Bucket.Collateral) return _slot(Slots.TOTAL_COLLATERL_SLOT, token);
+        if (bucket == IVault.Bucket.Collateral) return _slot(Slots.TOTAL_COLLATERAL_SLOT, token);
         revert("invalid bucket");
     }
 

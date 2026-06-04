@@ -49,8 +49,8 @@ contract Token is ERC20, IToken {
         _mint(account, amount);
     }
 
-    /// @dev burns are also restricted because they may effect other aspects of the system
-    /// depending on the creators configuration so must be handled by the controller.
+    /// @dev burns are also restricted because they may affect other aspects of the system
+    /// depending on the creator's configuration, so they must be handled by the controller.
     function burnFrom(address account, uint256 amount) external onlyController {
         _burn(account, amount);
     }

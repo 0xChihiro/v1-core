@@ -27,7 +27,7 @@ abstract contract Module is ControllerAdapter {
     function VERSION() external pure virtual returns (uint8 major, uint8 minor) {}
 
     /// @notice Initialization function for the module
-    /// @dev    This function is called when the module is installed or upgraded by the kernel.
-    /// @dev    MUST BE GATED BY onlyKernel. Used to encompass any initialization or upgrade logic.
+    /// @dev    This function is called when the module is installed or upgraded by the controller.
+    /// @dev    MUST BE GATED BY onlyController. Used to encompass any initialization or upgrade logic.
     function INIT() external virtual onlyController {}
 }

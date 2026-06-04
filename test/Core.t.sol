@@ -21,7 +21,7 @@ contract CoreTest is Test {
         vm.expectRevert(Kernel.Kernel__VaultZeroAddress.selector);
         new Kernel(controller, address(0));
 
-        Kernel configuredKernel = new Kernel(controller, vault);
+        IKernel configuredKernel = IKernel(address(new Kernel(controller, vault)));
 
         assertEq(configuredKernel.CONTROLLER(), controller);
         assertEq(configuredKernel.VAULT(), vault);
@@ -176,7 +176,7 @@ contract CoreTest is Test {
     }
 
     /*
-        1. Ensure that the can cannot be from someone who is not the controller or account writer
+        1. Ensure that the call cannot be from someone who is not the controller or accounting writer.
         2. Ensure that if any of the slots overflow it reverts.
         3. Ensure that if the slot already has data in it, the updated data reflects the addition.
         4. Ensure that blank slots hold the passed value.
@@ -319,9 +319,9 @@ contract CoreTest is Test {
     }
 
     /*
-        1. Ensure that the call can not be completed if the caller is not the controller or account writer.
+        1. Ensure that the call cannot be completed if the caller is not the controller or accounting writer.
         2. Ensure it works for the controller.
-        3. Ensure it works for the account writer.
+        3. Ensure it works for the accounting writer.
         4. Ensure that if a value will underflow it reverts.
     */
     function testSubSingle(uint128 value) public {
@@ -345,9 +345,9 @@ contract CoreTest is Test {
     }
 
     /*
-        1. Ensure that the call can not be completed if the caller is not the controller or account writer.
+        1. Ensure that the call cannot be completed if the caller is not the controller or accounting writer.
         2. Ensure it works for the controller.
-        3. Ensure it works for the account writer.
+        3. Ensure it works for the accounting writer.
         4. Ensure that if a value will underflow it reverts.
         5. Ensure that slots that already have values stored in them show that they have been updated
     */
@@ -498,9 +498,9 @@ contract CoreTest is Test {
 
     /*
         1. Calls should only be written by the controller.
-        2. Calls should override any data that may have been in the slot before hand
+        2. Calls should override any data that may have been in the slot beforehand.
         3. Latest state should reflect the latest calls.
-        4. Untouch slots should not be effected.
+        4. Untouched slots should not be affected.
     */
     function testUpdateStateArray() public {
         bytes32 firstSlot = keccak256("first update state array slot");
@@ -550,7 +550,7 @@ contract CoreTest is Test {
     /*
         1. Call should only be made by the controller.
         2. Data should be in 32 byte word length
-        3. Should effectively write 32 bytes of data in each slot, overwritting data if it exists.
+        3. Should effectively write 32 bytes of data in each slot, overwriting data if it exists.
         4. If data is spread across 2 slots it should be able to reflect that in the
         way it is stored. Ie strings or something like that.
     */

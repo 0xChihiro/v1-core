@@ -1,7 +1,7 @@
 ///SPDX-License-Identifier: MIT
 pragma solidity 0.8.34;
 
-// @notice Actions to trigger state changes in the kernel. Passed by the executor
+// @notice Actions to trigger controller state changes. Passed by the executor.
 enum Actions {
     InstallModule,
     UpgradeModule,
@@ -9,7 +9,7 @@ enum Actions {
     DeactivatePolicy
 }
 
-/// @notice Used by executor to select an action and a target contract for a kernel action
+/// @notice Used by an executor to select an action and a target contract for a controller action
 struct Instruction {
     Actions action;
     address target;

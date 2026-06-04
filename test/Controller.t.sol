@@ -8,6 +8,10 @@ import {Module} from "../src/Module.sol";
 import {Policy} from "../src/Policy.sol";
 import {Vault} from "../src/Vault.sol";
 import {IController} from "../src/interfaces/IController.sol";
+import {IControllerAdapter} from "../src/interfaces/IControllerAdapter.sol";
+import {IDefaultAdminRole} from "../src/interfaces/IDefaultAdminRole.sol";
+import {IModule} from "../src/interfaces/IModule.sol";
+import {IPolicy} from "../src/interfaces/IPolicy.sol";
 import {IVault} from "../src/interfaces/IVault.sol";
 import {Slots} from "../src/libraries/Slots.sol";
 import {Actions, InvalidKeycode, Keycode, Permissions, TargetNotAContract} from "../src/Utils.sol";
@@ -48,6 +52,26 @@ contract AuxiliaryTestModule is Module {
 
     function VERSION() external pure override returns (uint8 major, uint8 minor) {
         return (1, 0);
+    }
+}
+
+error ExternalCallTarget__Reverted();
+
+contract ExternalCallTarget {
+    address public caller;
+    uint256 public value;
+
+    function setValue(uint256 newValue) external {
+        caller = msg.sender;
+        value = newValue;
+    }
+
+    function revertCall() external pure {
+        revert ExternalCallTarget__Reverted();
+    }
+
+    function reenter(IController controller) external {
+        controller.settle(new IController.Settlement[](0));
     }
 }
 
@@ -251,6 +275,7 @@ contract ControllerTest is Test {
         IController.Receipt[] receipts;
         RawStateUpdate[] singleStateUpdates;
         IController.StateUpdates[] multiStateUpdates;
+        IController.ExternalCall[] externalCalls;
     }
 
     struct SystemState {
@@ -307,6 +332,75 @@ contract ControllerTest is Test {
         assertFalse(controller.hasRole(controller.CREDITOR_ROLE(), admin));
     }
 
+    function testControllerInterfaceExposesConsumerViews() public {
+        IController controllerView = IController(address(controller));
+        Keycode settlementKeycode = module.KEYCODE();
+
+        assertEq(controllerView.BPS(), BPS);
+        assertEq(controllerView.AUCTION_FEE_BPS(), AUCTION_FEE_BPS);
+        assertEq(address(controllerView.KERNEL()), address(kernel));
+        assertEq(address(controllerView.VAULT()), address(vault));
+        assertEq(address(controllerView.TOKEN()), address(token));
+        assertEq(controllerView.PROTOCOL_COLLECTOR(), protocolCollector);
+        bytes32 defaultAdminRole = IDefaultAdminRole(address(controller)).DEFAULT_ADMIN_ROLE();
+        assertEq(defaultAdminRole, controller.DEFAULT_ADMIN_ROLE());
+        assertTrue(controllerView.hasRole(defaultAdminRole, admin));
+        assertEq(controllerView.allKeycodesLength(), 1);
+        assertEq(Keycode.unwrap(controllerView.allKeycodes(0)), Keycode.unwrap(settlementKeycode));
+        assertEq(controllerView.getModuleForKeycode(settlementKeycode), address(module));
+        assertEq(Keycode.unwrap(controllerView.getKeycodeForModule(address(module))), Keycode.unwrap(settlementKeycode));
+        assertEq(controllerView.activePoliciesLength(), 0);
+        assertEq(controllerView.moduleDependentsLength(settlementKeycode), 0);
+        assertFalse(controllerView.mintPermissions(settlementKeycode));
+        assertFalse(controllerView.moduleDisabled(settlementKeycode));
+        assertFalse(controllerView.settlementsPaused());
+
+        LifecycleModuleV1 lifecycleModule = new LifecycleModuleV1(address(controller));
+        Keycode lifecycleKeycode = lifecycleModule.KEYCODE();
+        LifecyclePolicy policy = new LifecyclePolicy(
+            address(controller), lifecycleKeycode, lifecycleKeycode, LifecycleModuleV1.restrictedPing.selector
+        );
+        IControllerAdapter moduleAdapter = IControllerAdapter(address(lifecycleModule));
+        IModule moduleView = IModule(address(lifecycleModule));
+        IPolicy policyView = IPolicy(address(policy));
+
+        assertEq(address(moduleAdapter.CONTROLLER()), address(controller));
+        assertEq(address(moduleView.CONTROLLER()), address(controller));
+        assertEq(Keycode.unwrap(moduleView.KEYCODE()), Keycode.unwrap(lifecycleKeycode));
+        (uint8 major, uint8 minor) = moduleView.VERSION();
+        assertEq(major, 1);
+        assertEq(minor, 0);
+        assertEq(address(policyView.CONTROLLER()), address(controller));
+        assertEq(Keycode.unwrap(policyView.KEYCODE()), Keycode.unwrap(policy.KEYCODE()));
+        assertFalse(policyView.isActive());
+
+        vm.startPrank(admin);
+        controllerView.executeAction(Actions.InstallModule, address(lifecycleModule));
+        controllerView.executeAction(Actions.ActivatePolicy, address(policy));
+        vm.stopPrank();
+
+        assertEq(controllerView.allKeycodesLength(), 2);
+        assertEq(controllerView.activePoliciesLength(), 1);
+        assertEq(controllerView.activePolicies(0), address(policy));
+        assertEq(controllerView.getPolicyIndex(address(policy)), 0);
+        assertEq(controllerView.moduleDependentsLength(lifecycleKeycode), 1);
+        assertEq(controllerView.moduleDependents(lifecycleKeycode, 0), address(policy));
+        assertEq(controllerView.getDependentIndex(lifecycleKeycode, address(policy)), 0);
+        assertTrue(policyView.isActive());
+
+        assertEq(controllerView.getPolicyDependenciesLength(address(policy)), 1);
+        assertEq(controllerView.getPolicyPermissionsLength(address(policy)), 1);
+        Keycode dependency = controllerView.getPolicyDependency(address(policy), 0);
+        Permissions memory permission = controllerView.getPolicyPermission(address(policy), 0);
+        Permissions[] memory requestedPermissions = policyView.requestPermissions();
+        assertEq(Keycode.unwrap(dependency), Keycode.unwrap(lifecycleKeycode));
+        assertEq(Keycode.unwrap(permission.keycode), Keycode.unwrap(lifecycleKeycode));
+        assertEq(permission.funcSelector, LifecycleModuleV1.restrictedPing.selector);
+        assertEq(requestedPermissions.length, 1);
+        assertEq(Keycode.unwrap(requestedPermissions[0].keycode), Keycode.unwrap(lifecycleKeycode));
+        assertEq(requestedPermissions[0].funcSelector, LifecycleModuleV1.restrictedPing.selector);
+    }
+
     function testConstructorRejectsZeroAddresses() public {
         vm.expectRevert(IController.Controller__ZeroAddress.selector);
         new Controller(address(0), protocolCollector, address(kernel), address(vault), address(token));
@@ -359,7 +453,9 @@ contract ControllerTest is Test {
         controller.executeAction(Actions.InstallModule, address(auxiliaryModule));
 
         assertEq(controller.getModuleForKeycode(auxiliaryKeycode), address(auxiliaryModule));
-        assertEq(Keycode.unwrap(controller.getKeycodeForModule(auxiliaryModule)), Keycode.unwrap(auxiliaryKeycode));
+        assertEq(
+            Keycode.unwrap(controller.getKeycodeForModule(address(auxiliaryModule))), Keycode.unwrap(auxiliaryKeycode)
+        );
 
         LifecycleModuleV1 lifecycleModule = new LifecycleModuleV1(address(controller));
 
@@ -550,7 +646,9 @@ contract ControllerTest is Test {
         controller.executeAction(Actions.InstallModule, address(lifecycleModule));
 
         assertEq(controller.getModuleForKeycode(lifecycleKeycode), address(lifecycleModule));
-        assertEq(Keycode.unwrap(controller.getKeycodeForModule(lifecycleModule)), Keycode.unwrap(lifecycleKeycode));
+        assertEq(
+            Keycode.unwrap(controller.getKeycodeForModule(address(lifecycleModule))), Keycode.unwrap(lifecycleKeycode)
+        );
         assertEq(Keycode.unwrap(controller.allKeycodes(1)), Keycode.unwrap(lifecycleKeycode));
         assertEq(lifecycleModule.initCount(), 1);
     }
@@ -569,7 +667,7 @@ contract ControllerTest is Test {
         controller.executeAction(Actions.InstallModule, address(miswiredModule));
 
         assertEq(controller.getModuleForKeycode(miswiredKeycode), address(0));
-        assertEq(Keycode.unwrap(controller.getKeycodeForModule(miswiredModule)), bytes5(0));
+        assertEq(Keycode.unwrap(controller.getKeycodeForModule(address(miswiredModule))), bytes5(0));
         assertEq(miswiredModule.initCount(), 0);
 
         InvalidKeycodeModule invalidKeycodeModule = new InvalidKeycodeModule(address(controller));
@@ -589,7 +687,7 @@ contract ControllerTest is Test {
         controller.executeAction(Actions.InstallModule, address(revertingModule));
 
         assertEq(controller.getModuleForKeycode(revertingKeycode), address(0));
-        assertEq(Keycode.unwrap(controller.getKeycodeForModule(revertingModule)), bytes5(0));
+        assertEq(Keycode.unwrap(controller.getKeycodeForModule(address(revertingModule))), bytes5(0));
     }
 
     function testExecuteActionRejectsDuplicateModuleInstall() public {
@@ -607,7 +705,7 @@ contract ControllerTest is Test {
         controller.executeAction(Actions.InstallModule, address(duplicateModule));
 
         assertEq(controller.getModuleForKeycode(lifecycleKeycode), address(lifecycleModule));
-        assertEq(Keycode.unwrap(controller.getKeycodeForModule(duplicateModule)), bytes5(0));
+        assertEq(Keycode.unwrap(controller.getKeycodeForModule(address(duplicateModule))), bytes5(0));
         assertEq(duplicateModule.initCount(), 0);
     }
 
@@ -632,8 +730,10 @@ contract ControllerTest is Test {
         controller.executeAction(Actions.UpgradeModule, address(upgradedModule));
 
         assertEq(controller.getModuleForKeycode(lifecycleKeycode), address(upgradedModule));
-        assertEq(Keycode.unwrap(controller.getKeycodeForModule(lifecycleModule)), bytes5(0));
-        assertEq(Keycode.unwrap(controller.getKeycodeForModule(upgradedModule)), Keycode.unwrap(lifecycleKeycode));
+        assertEq(Keycode.unwrap(controller.getKeycodeForModule(address(lifecycleModule))), bytes5(0));
+        assertEq(
+            Keycode.unwrap(controller.getKeycodeForModule(address(upgradedModule))), Keycode.unwrap(lifecycleKeycode)
+        );
         assertEq(Keycode.unwrap(controller.allKeycodes(1)), Keycode.unwrap(lifecycleKeycode));
         vm.expectRevert();
         controller.allKeycodes(2);
@@ -672,7 +772,7 @@ contract ControllerTest is Test {
         controller.executeAction(Actions.UpgradeModule, address(miswiredUpgrade));
 
         assertEq(controller.getModuleForKeycode(lifecycleKeycode), address(lifecycleModule));
-        assertEq(Keycode.unwrap(controller.getKeycodeForModule(miswiredUpgrade)), bytes5(0));
+        assertEq(Keycode.unwrap(controller.getKeycodeForModule(address(miswiredUpgrade))), bytes5(0));
         assertEq(miswiredUpgrade.initCount(), 0);
 
         vm.prank(admin);
@@ -686,8 +786,10 @@ contract ControllerTest is Test {
         controller.executeAction(Actions.UpgradeModule, address(revertingUpgrade));
 
         assertEq(controller.getModuleForKeycode(lifecycleKeycode), address(lifecycleModule));
-        assertEq(Keycode.unwrap(controller.getKeycodeForModule(lifecycleModule)), Keycode.unwrap(lifecycleKeycode));
-        assertEq(Keycode.unwrap(controller.getKeycodeForModule(revertingUpgrade)), bytes5(0));
+        assertEq(
+            Keycode.unwrap(controller.getKeycodeForModule(address(lifecycleModule))), Keycode.unwrap(lifecycleKeycode)
+        );
+        assertEq(Keycode.unwrap(controller.getKeycodeForModule(address(revertingUpgrade))), bytes5(0));
     }
 
     function testExecuteActionActivatesPolicyAndGrantsPermissions() public {
@@ -708,9 +810,9 @@ contract ControllerTest is Test {
 
         assertTrue(controller.isPolicyActive(address(policy)));
         assertEq(address(controller.activePolicies(0)), address(policy));
-        assertEq(controller.getPolicyIndex(policy), 0);
+        assertEq(controller.getPolicyIndex(address(policy)), 0);
         assertEq(address(controller.moduleDependents(lifecycleKeycode, 0)), address(policy));
-        assertEq(controller.getDependentIndex(lifecycleKeycode, policy), 0);
+        assertEq(controller.getDependentIndex(lifecycleKeycode, address(policy)), 0);
         assertTrue(
             controller.modulePermissions(lifecycleKeycode, address(policy), LifecycleModuleV1.restrictedPing.selector)
         );
@@ -1009,10 +1111,10 @@ contract ControllerTest is Test {
         vm.prank(admin);
         controller.executeAction(Actions.ActivatePolicy, address(remainingPolicy));
 
-        assertEq(controller.getPolicyIndex(removedPolicy), 0);
-        assertEq(controller.getPolicyIndex(remainingPolicy), 1);
-        assertEq(controller.getDependentIndex(lifecycleKeycode, removedPolicy), 0);
-        assertEq(controller.getDependentIndex(lifecycleKeycode, remainingPolicy), 1);
+        assertEq(controller.getPolicyIndex(address(removedPolicy)), 0);
+        assertEq(controller.getPolicyIndex(address(remainingPolicy)), 1);
+        assertEq(controller.getDependentIndex(lifecycleKeycode, address(removedPolicy)), 0);
+        assertEq(controller.getDependentIndex(lifecycleKeycode, address(remainingPolicy)), 1);
 
         vm.prank(admin);
         controller.executeAction(Actions.DeactivatePolicy, address(removedPolicy));
@@ -1020,9 +1122,9 @@ contract ControllerTest is Test {
         assertFalse(controller.isPolicyActive(address(removedPolicy)));
         assertTrue(controller.isPolicyActive(address(remainingPolicy)));
         assertEq(address(controller.activePolicies(0)), address(remainingPolicy));
-        assertEq(controller.getPolicyIndex(remainingPolicy), 0);
+        assertEq(controller.getPolicyIndex(address(remainingPolicy)), 0);
         assertEq(address(controller.moduleDependents(lifecycleKeycode, 0)), address(remainingPolicy));
-        assertEq(controller.getDependentIndex(lifecycleKeycode, remainingPolicy), 0);
+        assertEq(controller.getDependentIndex(lifecycleKeycode, address(remainingPolicy)), 0);
         assertFalse(
             controller.modulePermissions(
                 lifecycleKeycode, address(removedPolicy), LifecycleModuleV1.restrictedPing.selector
@@ -1317,6 +1419,125 @@ contract ControllerTest is Test {
         assertEq(uint256(kernel.viewData(bytes32(uint256(rangeStart) + 1))), 2);
     }
 
+    function testSettleExternalCallExecutesCallsFromControllerInOrder() public {
+        ExternalCallTarget target = new ExternalCallTarget();
+        IController.Settlement[] memory settlements =
+            _singleSettlement(IController.StateTransitions.ExternalCall, 0, new IController.Receipt[](0));
+        settlements[0].externalCalls = new IController.ExternalCall[](2);
+        settlements[0].externalCalls[0] =
+            IController.ExternalCall({target: address(target), data: abi.encodeCall(ExternalCallTarget.setValue, (1))});
+        settlements[0].externalCalls[1] =
+            IController.ExternalCall({target: address(target), data: abi.encodeCall(ExternalCallTarget.setValue, (2))});
+
+        module.settle(settlements);
+
+        assertEq(target.caller(), address(controller));
+        assertEq(target.value(), 2);
+    }
+
+    function testSettleExternalCallCanMintWhenBackingRatioIncreases() public {
+        _seedBacking(INITIAL_SUPPLY);
+        asset.mint(address(vault), 2 ether);
+
+        IController.Settlement[] memory settlements =
+            _singleSettlement(IController.StateTransitions.ExternalCall, 0, new IController.Receipt[](0));
+        settlements[0].externalCalls = new IController.ExternalCall[](2);
+        settlements[0].externalCalls[0] =
+            IController.ExternalCall({target: address(token), data: abi.encodeCall(Token.mint, (user, 1 ether))});
+        settlements[0].externalCalls[1] = IController.ExternalCall({
+            target: address(vault), data: abi.encodeCall(Vault.syncSurplus, (address(asset), IVault.Bucket.Redeem))
+        });
+
+        module.settle(settlements);
+
+        assertEq(token.totalSupply(), INITIAL_SUPPLY + 1 ether);
+        assertEq(token.balanceOf(user), INITIAL_SUPPLY + 1 ether);
+        assertEq(_bucketValue(IVault.Bucket.Redeem, address(asset)), INITIAL_SUPPLY + 2 ether);
+    }
+
+    function testSettleExternalCallThatLowersBackingRatioRevertsAndRollsBack() public {
+        _seedBacking(INITIAL_SUPPLY);
+
+        IController.Settlement[] memory settlements =
+            _singleSettlement(IController.StateTransitions.ExternalCall, 0, new IController.Receipt[](0));
+        settlements[0].externalCalls = new IController.ExternalCall[](1);
+        settlements[0].externalCalls[0] =
+            IController.ExternalCall({target: address(token), data: abi.encodeCall(Token.mint, (user, 1 ether))});
+
+        vm.expectRevert(IController.Controller__BackingWentDown.selector);
+        module.settle(settlements);
+
+        assertEq(token.totalSupply(), INITIAL_SUPPLY);
+        assertEq(token.balanceOf(user), INITIAL_SUPPLY);
+        assertEq(_bucketValue(IVault.Bucket.Redeem, address(asset)), INITIAL_SUPPLY);
+    }
+
+    function testSettleExternalCallCannotCreatePhantomHeldAccounting() public {
+        _seedBacking(INITIAL_SUPPLY);
+        bytes32 redeemSlot = _bucketSlot(IVault.Bucket.Redeem, address(asset));
+
+        IController.Settlement[] memory settlements =
+            _singleSettlement(IController.StateTransitions.ExternalCall, 0, new IController.Receipt[](0));
+        settlements[0].externalCalls = new IController.ExternalCall[](1);
+        settlements[0].externalCalls[0] = IController.ExternalCall({
+            target: address(kernel),
+            data: abi.encodeWithSignature("add(bytes32,bytes32)", redeemSlot, bytes32(uint256(1 ether)))
+        });
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                Vault.Vault__InsufficientBalance.selector, address(asset), INITIAL_SUPPLY, INITIAL_SUPPLY + 1 ether
+            )
+        );
+        module.settle(settlements);
+
+        assertEq(asset.balanceOf(address(vault)), INITIAL_SUPPLY);
+        assertEq(_bucketValue(IVault.Bucket.Redeem, address(asset)), INITIAL_SUPPLY);
+    }
+
+    function testSettleExternalCallRejectsNonContractTarget() public {
+        address target = makeAddr("External Call EOA");
+        IController.Settlement[] memory settlements =
+            _singleSettlement(IController.StateTransitions.ExternalCall, 0, new IController.Receipt[](0));
+        settlements[0].externalCalls = new IController.ExternalCall[](1);
+        settlements[0].externalCalls[0] = IController.ExternalCall({target: target, data: ""});
+
+        vm.expectRevert(abi.encodeWithSelector(IController.Controller__TargetNotAContract.selector, target));
+        module.settle(settlements);
+    }
+
+    function testSettleExternalCallBubblesRevertAndRollsBackEarlierCalls() public {
+        ExternalCallTarget target = new ExternalCallTarget();
+        IController.Settlement[] memory settlements =
+            _singleSettlement(IController.StateTransitions.ExternalCall, 0, new IController.Receipt[](0));
+        settlements[0].externalCalls = new IController.ExternalCall[](2);
+        settlements[0].externalCalls[0] =
+            IController.ExternalCall({target: address(target), data: abi.encodeCall(ExternalCallTarget.setValue, (1))});
+        settlements[0].externalCalls[1] = IController.ExternalCall({
+            target: address(target), data: abi.encodeCall(ExternalCallTarget.revertCall, ())
+        });
+
+        vm.expectRevert(ExternalCallTarget__Reverted.selector);
+        module.settle(settlements);
+
+        assertEq(target.caller(), address(0));
+        assertEq(target.value(), 0);
+    }
+
+    function testSettleExternalCallCannotReenterControllerSettlement() public {
+        ExternalCallTarget target = new ExternalCallTarget();
+        IController.Settlement[] memory settlements =
+            _singleSettlement(IController.StateTransitions.ExternalCall, 0, new IController.Receipt[](0));
+        settlements[0].externalCalls = new IController.ExternalCall[](1);
+        settlements[0].externalCalls[0] = IController.ExternalCall({
+            target: address(target),
+            data: abi.encodeCall(ExternalCallTarget.reenter, (IController(address(controller))))
+        });
+
+        vm.expectRevert(bytes4(keccak256("Controller__Locked()")));
+        module.settle(settlements);
+    }
+
     function testSettlePaymentWithoutMintPermissionRevertsAndLeavesStateUnchanged() public {
         _seedBacking(INITIAL_SUPPLY);
         asset.mint(user, 400 ether);
@@ -1448,7 +1669,8 @@ contract ControllerTest is Test {
             transition: uint8(IController.StateTransitions.StateUpdate),
             receipts: new IController.Receipt[](0),
             singleStateUpdates: singleStateUpdates,
-            multiStateUpdates: new IController.StateUpdates[](0)
+            multiStateUpdates: new IController.StateUpdates[](0),
+            externalCalls: new IController.ExternalCall[](0)
         });
 
         SystemState memory beforeState = _snapshot(rawSlot, bytes32(0));
@@ -1738,7 +1960,8 @@ contract ControllerTest is Test {
             transition: transition,
             receipts: receipts,
             singleStateUpdates: new IController.StateUpdate[](0),
-            multiStateUpdates: new IController.StateUpdates[](0)
+            multiStateUpdates: new IController.StateUpdates[](0),
+            externalCalls: new IController.ExternalCall[](0)
         });
     }
 
@@ -1879,7 +2102,7 @@ contract ControllerTest is Test {
         if (bucket == IVault.Bucket.Redeem) return _slot(Slots.BACKING_AMOUNT_SLOT, token_);
         if (bucket == IVault.Bucket.Treasury) return _slot(Slots.TREASURY_AMOUNT_SLOT, token_);
         if (bucket == IVault.Bucket.Team) return _slot(Slots.TEAM_AMOUNT_SLOT, token_);
-        if (bucket == IVault.Bucket.Collateral) return _slot(Slots.TOTAL_COLLATERL_SLOT, token_);
+        if (bucket == IVault.Bucket.Collateral) return _slot(Slots.TOTAL_COLLATERAL_SLOT, token_);
         revert("invalid bucket");
     }
 

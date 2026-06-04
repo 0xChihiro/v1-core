@@ -20,11 +20,11 @@ contract Controller is Dispatch, AccessControl {
     /// @notice Mapping of keycode to module address.
     mapping(Keycode => Module) internal _moduleForKeycode;
     /// @notice Mapping of module address to keycode.
-    mapping(Module => Keycode) public getKeycodeForModule;
+    mapping(address => Keycode) public getKeycodeForModule;
     /// @notice Mapping of a keycode to all of its policy dependents. Used to efficiently reconfigure policy dependencies.
-    mapping(Keycode => Policy[]) public moduleDependents;
+    mapping(Keycode => address[]) public moduleDependents;
     /// @notice Helper for module dependent arrays. Prevents the need to loop through array.
-    mapping(Keycode => mapping(Policy => uint256)) public getDependentIndex;
+    mapping(Keycode => mapping(address => uint256)) public getDependentIndex;
     /// @notice Module <> Policy Permissions.
     /// @dev    Keycode -> Policy -> Function Selector -> bool for permission
     mapping(Keycode => mapping(Policy => mapping(bytes4 => bool))) internal _modulePermissions;
@@ -33,9 +33,9 @@ contract Controller is Dispatch, AccessControl {
     /// @dev Policy permission registrations captured at activation for deterministic cleanup.
     mapping(Policy => Permissions[]) internal _policyPermissions;
     /// @notice List of all active policies
-    Policy[] public activePolicies;
+    address[] public activePolicies;
     /// @notice Helper to get active policy quickly. Prevents need to loop through array.
-    mapping(Policy => uint256) public getPolicyIndex;
+    mapping(address => uint256) public getPolicyIndex;
 
     constructor(address admin, address protocolCollector, address kernel, address vault, address token)
         Dispatch(protocolCollector, kernel, vault, token)
@@ -44,9 +44,9 @@ contract Controller is Dispatch, AccessControl {
             admin == address(0) || protocolCollector == address(0) || kernel == address(0) || vault == address(0)
                 || token == address(0)
         ) revert Controller__ZeroAddress();
-        if (kernel.code.length == 0) revert Controller__TargetNotAContract(kernel);
-        if (vault.code.length == 0) revert Controller__TargetNotAContract(vault);
-        if (token.code.length == 0) revert Controller__TargetNotAContract(token);
+        _ensureTargetContract(kernel);
+        _ensureTargetContract(vault);
+        _ensureTargetContract(token);
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(EXECUTOR_ROLE, admin);
@@ -66,8 +66,36 @@ contract Controller is Dispatch, AccessControl {
         return _isPolicyActive(Policy(policy_));
     }
 
+    function allKeycodesLength() external view override returns (uint256) {
+        return allKeycodes.length;
+    }
+
+    function activePoliciesLength() external view override returns (uint256) {
+        return activePolicies.length;
+    }
+
+    function moduleDependentsLength(Keycode module) external view override returns (uint256) {
+        return moduleDependents[module].length;
+    }
+
+    function getPolicyDependency(address policy, uint256 index) external view override returns (Keycode) {
+        return _policyDependencies[Policy(policy)][index];
+    }
+
+    function getPolicyDependenciesLength(address policy) external view override returns (uint256) {
+        return _policyDependencies[Policy(policy)].length;
+    }
+
+    function getPolicyPermission(address policy, uint256 index) external view override returns (Permissions memory) {
+        return _policyPermissions[Policy(policy)][index];
+    }
+
+    function getPolicyPermissionsLength(address policy) external view override returns (uint256) {
+        return _policyPermissions[Policy(policy)].length;
+    }
+
     function _isPolicyActive(Policy policy_) internal view returns (bool) {
-        return activePolicies.length > 0 && address(activePolicies[getPolicyIndex[policy_]]) == address(policy_);
+        return activePolicies.length > 0 && activePolicies[getPolicyIndex[address(policy_)]] == address(policy_);
     }
 
     function credit(address asset, uint256 amount, IVault.Bucket to, IVault.Bucket from)
@@ -140,7 +168,7 @@ contract Controller is Dispatch, AccessControl {
         }
 
         _moduleForKeycode[keycode] = newModule;
-        getKeycodeForModule[newModule] = keycode;
+        getKeycodeForModule[address(newModule)] = keycode;
         allKeycodes.push(keycode);
 
         newModule.INIT();
@@ -153,8 +181,8 @@ contract Controller is Dispatch, AccessControl {
             revert Controller__InvalidModuleUpgrade(keycode);
         }
 
-        getKeycodeForModule[oldModule] = Keycode.wrap(bytes5(0));
-        getKeycodeForModule[newModule] = keycode;
+        getKeycodeForModule[address(oldModule)] = Keycode.wrap(bytes5(0));
+        getKeycodeForModule[address(newModule)] = keycode;
         _moduleForKeycode[keycode] = newModule;
 
         newModule.INIT();
@@ -166,8 +194,8 @@ contract Controller is Dispatch, AccessControl {
         if (_isPolicyActive(policy)) revert Controller__PolicyAlreadyActivated(address(policy));
 
         // Add policy to list of active policies
-        activePolicies.push(policy);
-        getPolicyIndex[policy] = activePolicies.length - 1;
+        activePolicies.push(address(policy));
+        getPolicyIndex[address(policy)] = activePolicies.length - 1;
 
         // Record module dependencies
         Keycode[] memory dependencies = policy.configureDependencies();
@@ -178,8 +206,8 @@ contract Controller is Dispatch, AccessControl {
         for (uint256 i; i < depLength;) {
             Keycode keycode = dependencies[i];
 
-            moduleDependents[keycode].push(policy);
-            getDependentIndex[keycode][policy] = moduleDependents[keycode].length - 1;
+            moduleDependents[keycode].push(address(policy));
+            getDependentIndex[keycode][address(policy)] = moduleDependents[keycode].length - 1;
 
             unchecked {
                 ++i;
@@ -201,13 +229,13 @@ contract Controller is Dispatch, AccessControl {
         _setPolicyPermissions(policy, requests, false);
 
         // Remove policy from all policy data structures
-        uint256 idx = getPolicyIndex[policy];
-        Policy lastPolicy = activePolicies[activePolicies.length - 1];
+        uint256 idx = getPolicyIndex[address(policy)];
+        address lastPolicy = activePolicies[activePolicies.length - 1];
 
         activePolicies[idx] = lastPolicy;
         activePolicies.pop();
         getPolicyIndex[lastPolicy] = idx;
-        delete getPolicyIndex[policy];
+        delete getPolicyIndex[address(policy)];
 
         // Remove policy from module dependents
         Keycode[] memory dependencies = _policyDependencies[policy];
@@ -217,13 +245,13 @@ contract Controller is Dispatch, AccessControl {
         delete _policyPermissions[policy];
     }
 
-    /// @notice reconfigure previous modules dependencies to point to the updated module
+    /// @notice Reconfigure dependent policies to point to the updated module.
     function _reconfigurePolicies(Keycode keycode) internal {
-        Policy[] memory dependents = moduleDependents[keycode];
+        address[] memory dependents = moduleDependents[keycode];
         uint256 depLength = dependents.length;
 
         for (uint256 i; i < depLength;) {
-            dependents[i].configureDependencies();
+            Policy(dependents[i]).configureDependencies();
 
             unchecked {
                 ++i;
@@ -232,14 +260,14 @@ contract Controller is Dispatch, AccessControl {
     }
 
     function _pruneFromDependents(Policy policy, Keycode[] memory dependencies) internal {
-        uint256 depcLength = dependencies.length;
+        uint256 dependencyCount = dependencies.length;
 
-        for (uint256 i; i < depcLength;) {
+        for (uint256 i; i < dependencyCount;) {
             Keycode keycode = dependencies[i];
-            Policy[] storage dependents = moduleDependents[keycode];
+            address[] storage dependents = moduleDependents[keycode];
 
-            uint256 origIndex = getDependentIndex[keycode][policy];
-            Policy lastPolicy = dependents[dependents.length - 1];
+            uint256 origIndex = getDependentIndex[keycode][address(policy)];
+            address lastPolicy = dependents[dependents.length - 1];
 
             // Swap with last and pop
             dependents[origIndex] = lastPolicy;
@@ -247,7 +275,7 @@ contract Controller is Dispatch, AccessControl {
 
             // Record new index and delete deactivated policy index
             getDependentIndex[keycode][lastPolicy] = origIndex;
-            delete getDependentIndex[keycode][policy];
+            delete getDependentIndex[keycode][address(policy)];
 
             unchecked {
                 ++i;
@@ -352,6 +380,6 @@ contract Controller is Dispatch, AccessControl {
     }
 
     function _getModuleKeycode(Module module_) internal view override returns (Keycode) {
-        return getKeycodeForModule[module_];
+        return getKeycodeForModule[address(module_)];
     }
 }

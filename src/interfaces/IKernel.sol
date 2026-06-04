@@ -6,6 +6,10 @@ interface IKernel {
         bytes32 slot;
         bytes32 data;
     }
+
+    /// @notice Controller authorized to write arbitrary kernel state.
+    function CONTROLLER() external view returns (address);
+
     /// @notice Vault address authorized alongside the controller to call accounting arithmetic functions.
     /// @return The immutable vault address.
     function VAULT() external view returns (address);

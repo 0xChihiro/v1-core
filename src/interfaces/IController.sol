@@ -1,12 +1,13 @@
 ///SPDX-License-Identifier: MIT
 pragma solidity 0.8.34;
 
-import {Token} from "../Token.sol";
-import {Keycode, Actions} from "../Utils.sol";
+import {Keycode, Actions, Permissions} from "../Utils.sol";
+import {IToken} from "./IToken.sol";
 import {IVault} from "./IVault.sol";
 import {IKernel} from "./IKernel.sol";
+import {IAccessControl} from "openzeppelin/contracts/access/IAccessControl.sol";
 
-interface IController {
+interface IController is IAccessControl {
     enum Op {
         Add,
         Sub,
@@ -29,7 +30,8 @@ interface IController {
         Deposit,
         Withdraw,
         Burn,
-        StateUpdate
+        StateUpdate,
+        ExternalCall
     }
 
     struct Settlement {
@@ -39,6 +41,12 @@ interface IController {
         Receipt[] receipts;
         StateUpdate[] singleStateUpdates;
         StateUpdates[] multiStateUpdates;
+        ExternalCall[] externalCalls;
+    }
+
+    struct ExternalCall {
+        address target;
+        bytes data;
     }
 
     struct Receipt {
@@ -57,7 +65,10 @@ interface IController {
         bytes data;
     }
 
-    function TOKEN() external view returns (Token);
+    function BPS() external view returns (uint256);
+    function AUCTION_FEE_BPS() external view returns (uint256);
+
+    function TOKEN() external view returns (IToken);
     function VAULT() external view returns (IVault);
     function KERNEL() external view returns (IKernel);
     function PROTOCOL_COLLECTOR() external view returns (address);
@@ -67,19 +78,37 @@ interface IController {
     function GUARDIAN_ROLE() external view returns (bytes32);
     function MINT_PERMISSION_ROLE() external view returns (bytes32);
 
+    function allKeycodes(uint256 index) external view returns (Keycode);
+    function allKeycodesLength() external view returns (uint256);
+    function activePolicies(uint256 index) external view returns (address);
+    function activePoliciesLength() external view returns (uint256);
+    function getDependentIndex(Keycode module, address policy) external view returns (uint256);
+    function getKeycodeForModule(address module) external view returns (Keycode);
+    function getPolicyDependency(address policy, uint256 index) external view returns (Keycode);
+    function getPolicyDependenciesLength(address policy) external view returns (uint256);
+    function getPolicyIndex(address policy) external view returns (uint256);
+    function getPolicyPermission(address policy, uint256 index) external view returns (Permissions memory);
+    function getPolicyPermissionsLength(address policy) external view returns (uint256);
+    function mintPermissions(Keycode module) external view returns (bool);
+    function moduleDependents(Keycode module, uint256 index) external view returns (address);
+    function moduleDependentsLength(Keycode module) external view returns (uint256);
+    function moduleDisabled(Keycode module) external view returns (bool);
+    function settlementsPaused() external view returns (bool);
+
     function executeAction(Actions action, address target) external;
     function credit(address asset, uint256 amount, IVault.Bucket to, IVault.Bucket from) external;
     function credits(IVault.CreditCall[] calldata calls) external;
     function setMintPermission(Keycode module, bool allowed) external;
     function setModuleDisabled(Keycode module, bool disabled) external;
     function setSettlementsPaused(bool paused) external;
-    function settle(Settlement[] calldata) external;
-    function sync(address, IVault.Bucket) external;
-    function getModuleForKeycode(Keycode) external view returns (address);
-    function modulePermissions(Keycode, address, bytes4) external view returns (bool);
-    function isPolicyActive(address) external view returns (bool);
+    function settle(Settlement[] calldata settlements) external;
+    function sync(address asset, IVault.Bucket bucket) external;
+    function getModuleForKeycode(Keycode module) external view returns (address);
+    function modulePermissions(Keycode module, address policy, bytes4 selector) external view returns (bool);
+    function isPolicyActive(address policy) external view returns (bool);
 
     event ActionExecuted(Actions indexed action, address indexed target);
+    event Controller__Settled(address indexed module, Settlement settlement);
     event PermissionUpdated(Keycode indexed module, Keycode indexed policy, bytes4 indexed selector, bool granted);
     event MintPermissionUpdated(Keycode indexed module, bool allowed);
     event Controller__SettlementPauseUpdated(bool paused);
@@ -106,4 +135,7 @@ interface IController {
     error Controller__ModuleDisabled(Keycode keycode);
     error Controller__MintPermissionDenied();
     error Controller__InvalidStateUpdate();
+    error Controller__Locked();
+    error InvalidKeycode(Keycode keycode);
+    error TargetNotAContract(address target);
 }

@@ -43,12 +43,16 @@ contract ControllerFactoryTest is Test {
 
     function testConstructorStoresCanonicalCreationCodeStores() public {
         IControllerFactory.CreationCodeStores memory codeStores = _codeStores();
-        ControllerFactory factory = new ControllerFactory(makeAddr("Protocol Collector"), codeStores);
+        address protocolCollector = makeAddr("Protocol Collector");
+        ControllerFactory factory = new ControllerFactory(protocolCollector, codeStores);
+        IControllerFactory factoryView = IControllerFactory(address(factory));
 
-        assertEq(factory.CONTROLLER_CODE_STORE(), codeStores.controller);
-        assertEq(factory.KERNEL_CODE_STORE(), codeStores.kernel);
-        assertEq(factory.VAULT_CODE_STORE(), codeStores.vault);
-        assertEq(factory.TOKEN_CODE_STORE(), codeStores.token);
+        assertEq(factoryView.PROTOCOL_COLLECTOR(), protocolCollector);
+        assertEq(factoryView.CONTROLLER_CODE_STORE(), codeStores.controller);
+        assertEq(factoryView.KERNEL_CODE_STORE(), codeStores.kernel);
+        assertEq(factoryView.VAULT_CODE_STORE(), codeStores.vault);
+        assertEq(factoryView.TOKEN_CODE_STORE(), codeStores.token);
+        assertEq(factoryView.totalControllers(), 0);
     }
 
     function testCreationCodeStoresContainCanonicalCreationCodeWithinRuntimeLimit() public {
