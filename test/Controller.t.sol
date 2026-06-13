@@ -230,7 +230,7 @@ contract DuplicateDependencyPolicy is Policy {
 
 contract ControllerPermissionHarness is Controller {
     constructor(address admin, address protocolCollector, address kernel, address vault, address token)
-        Controller(admin, protocolCollector, kernel, vault, token)
+        Controller(admin, protocolCollector, kernel, vault, token, 0)
     {}
 
     function forcePermission(Keycode keycode, Policy policy, bytes4 selector, bool granted) external {
@@ -308,7 +308,7 @@ contract ControllerTest is Test {
         kernel = new Kernel(predictedController, predictedVault);
         vault = new Vault(predictedController, predictedKernel);
         token = new Token("Enten", "ENTEN", predictedController, user, INITIAL_SUPPLY, type(uint256).max);
-        controller = new Controller(admin, protocolCollector, predictedKernel, predictedVault, predictedToken);
+        controller = new Controller(admin, protocolCollector, predictedKernel, predictedVault, predictedToken, 0);
 
         module = new SettlementTestModule(address(controller));
         asset = new ERC20Mock();
@@ -403,32 +403,32 @@ contract ControllerTest is Test {
 
     function testConstructorRejectsZeroAddresses() public {
         vm.expectRevert(IController.Controller__ZeroAddress.selector);
-        new Controller(address(0), protocolCollector, address(kernel), address(vault), address(token));
+        new Controller(address(0), protocolCollector, address(kernel), address(vault), address(token), 0);
 
         vm.expectRevert(IController.Controller__ZeroAddress.selector);
-        new Controller(admin, address(0), address(kernel), address(vault), address(token));
+        new Controller(admin, address(0), address(kernel), address(vault), address(token), 0);
 
         vm.expectRevert(IController.Controller__ZeroAddress.selector);
-        new Controller(admin, protocolCollector, address(0), address(vault), address(token));
+        new Controller(admin, protocolCollector, address(0), address(vault), address(token), 0);
 
         vm.expectRevert(IController.Controller__ZeroAddress.selector);
-        new Controller(admin, protocolCollector, address(kernel), address(0), address(token));
+        new Controller(admin, protocolCollector, address(kernel), address(0), address(token), 0);
 
         vm.expectRevert(IController.Controller__ZeroAddress.selector);
-        new Controller(admin, protocolCollector, address(kernel), address(vault), address(0));
+        new Controller(admin, protocolCollector, address(kernel), address(vault), address(0), 0);
     }
 
     function testConstructorRejectsNonContractKernelVaultOrToken() public {
         address notContract = makeAddr("Not Contract");
 
         vm.expectRevert(abi.encodeWithSelector(IController.Controller__TargetNotAContract.selector, notContract));
-        new Controller(admin, protocolCollector, notContract, address(vault), address(token));
+        new Controller(admin, protocolCollector, notContract, address(vault), address(token), 0);
 
         vm.expectRevert(abi.encodeWithSelector(IController.Controller__TargetNotAContract.selector, notContract));
-        new Controller(admin, protocolCollector, address(kernel), notContract, address(token));
+        new Controller(admin, protocolCollector, address(kernel), notContract, address(token), 0);
 
         vm.expectRevert(abi.encodeWithSelector(IController.Controller__TargetNotAContract.selector, notContract));
-        new Controller(admin, protocolCollector, address(kernel), address(vault), notContract);
+        new Controller(admin, protocolCollector, address(kernel), address(vault), notContract, 0);
     }
 
     function testLifecycleActionsRequireExecutorAndMintPermissionRequiresMintRole() public {
@@ -1258,6 +1258,70 @@ contract ControllerTest is Test {
         assertEq(_bucketValue(IVault.Bucket.Team, address(asset)), teamAmount);
     }
 
+    function testSettlePaymentWithZeroReceiptsRevertsAndLeavesStateUnchanged() public {
+        _seedBacking(INITIAL_SUPPLY);
+
+        Keycode moduleKeycode = module.KEYCODE();
+        vm.prank(admin);
+        controller.setMintPermission(moduleKeycode, true);
+
+        SystemState memory beforeState = _snapshot(bytes32(0), bytes32(0));
+
+        vm.expectRevert(IController.Controller__ZeroReceiptLength.selector);
+        module.settle(_singleSettlement(IController.StateTransitions.Payment, 1 ether, new IController.Receipt[](0)));
+
+        _assertStateUnchanged(beforeState, bytes32(0), bytes32(0));
+    }
+
+    function testSettlePaymentWithZeroConfiguredAssetsRevertsAndLeavesStateUnchanged() public {
+        address[] memory noAssets = new address[](0);
+        _setAssets(noAssets);
+
+        uint256 paymentAmount = 100 ether;
+        asset.mint(user, paymentAmount);
+
+        vm.prank(user);
+        asset.approve(address(vault), paymentAmount);
+
+        Keycode moduleKeycode = module.KEYCODE();
+        vm.prank(admin);
+        controller.setMintPermission(moduleKeycode, true);
+
+        SystemState memory beforeState = _snapshot(Slots.ASSETS_LENGTH_SLOT, Slots.ASSETS_BASE_SLOT);
+
+        vm.expectRevert(IController.Controller__ZeroAssetsLength.selector);
+        module.settle(
+            _singleSettlement(IController.StateTransitions.Payment, 1 ether, _oneReceipt(address(asset), paymentAmount))
+        );
+
+        _assertStateUnchanged(beforeState, Slots.ASSETS_LENGTH_SLOT, Slots.ASSETS_BASE_SLOT);
+    }
+
+    function testSettlePaymentWithUnconfiguredReceiptAssetRevertsAndLeavesStateUnchanged() public {
+        _seedBacking(INITIAL_SUPPLY);
+
+        uint256 paymentAmount = 100 ether;
+        secondAsset.mint(user, paymentAmount);
+
+        vm.prank(user);
+        secondAsset.approve(address(vault), paymentAmount);
+
+        Keycode moduleKeycode = module.KEYCODE();
+        vm.prank(admin);
+        controller.setMintPermission(moduleKeycode, true);
+
+        SystemState memory beforeState = _snapshot(bytes32(0), bytes32(0));
+
+        vm.expectRevert(IController.Controller__InvalidAsset.selector);
+        module.settle(
+            _singleSettlement(
+                IController.StateTransitions.Payment, 1 ether, _oneReceipt(address(secondAsset), paymentAmount)
+            )
+        );
+
+        _assertStateUnchanged(beforeState, bytes32(0), bytes32(0));
+    }
+
     function testSettleDeploySendsTreasuryAssets() public {
         _seedBacking(INITIAL_SUPPLY);
         _seedTreasury(70 ether);
@@ -1858,6 +1922,62 @@ contract ControllerTest is Test {
         assertEq(asset.balanceOf(protocolCollector), protocolFee);
         assertEq(asset.balanceOf(address(vault)), backingAmount);
         assertEq(_bucketValue(IVault.Bucket.Redeem, address(asset)), backingAmount);
+    }
+
+    function testSettlePaymentFromZeroSupplyRequiresBackingAtLeastMintedSupply() public {
+        vm.prank(address(controller));
+        token.burnFrom(user, INITIAL_SUPPLY);
+
+        uint256 paymentAmount = 90 ether;
+        uint256 mintAmount = 90 ether;
+        asset.mint(user, paymentAmount);
+
+        vm.prank(user);
+        asset.approve(address(vault), paymentAmount);
+
+        Keycode moduleKeycode = module.KEYCODE();
+        vm.prank(admin);
+        controller.setMintPermission(moduleKeycode, true);
+
+        SystemState memory beforeState = _snapshot(bytes32(0), bytes32(0));
+
+        vm.expectRevert(IController.Controller__BackingWentDown.selector);
+        module.settle(
+            _singleSettlement(
+                IController.StateTransitions.Payment, mintAmount, _oneReceipt(address(asset), paymentAmount)
+            )
+        );
+
+        _assertStateUnchanged(beforeState, bytes32(0), bytes32(0));
+    }
+
+    function testSettlePaymentFromZeroSupplyRequiresAllConfiguredAssetsBacked() public {
+        _setAssets(address(asset), address(secondAsset));
+
+        vm.prank(address(controller));
+        token.burnFrom(user, INITIAL_SUPPLY);
+
+        uint256 paymentAmount = 100 ether;
+        uint256 mintAmount = 90 ether;
+        asset.mint(user, paymentAmount);
+
+        vm.prank(user);
+        asset.approve(address(vault), paymentAmount);
+
+        Keycode moduleKeycode = module.KEYCODE();
+        vm.prank(admin);
+        controller.setMintPermission(moduleKeycode, true);
+
+        SystemState memory beforeState = _snapshot(bytes32(0), bytes32(0));
+
+        vm.expectRevert(IController.Controller__BackingWentDown.selector);
+        module.settle(
+            _singleSettlement(
+                IController.StateTransitions.Payment, mintAmount, _oneReceipt(address(asset), paymentAmount)
+            )
+        );
+
+        _assertStateUnchanged(beforeState, bytes32(0), bytes32(0));
     }
 
     function testSettleBatchLaterFailureRollsBackEarlierSettlement() public {

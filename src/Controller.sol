@@ -8,6 +8,7 @@ import {IVault} from "./interfaces/IVault.sol";
 import {ControllerAdapter} from "./ControllerAdapter.sol";
 import {Module} from "./Module.sol";
 import {Policy} from "./Policy.sol";
+import {Slots} from "./libraries/Slots.sol";
 
 contract Controller is Dispatch, AccessControl {
     bytes32 public constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
@@ -37,9 +38,14 @@ contract Controller is Dispatch, AccessControl {
     /// @notice Helper to get active policy quickly. Prevents need to loop through array.
     mapping(address => uint256) public getPolicyIndex;
 
-    constructor(address admin, address protocolCollector, address kernel, address vault, address token)
-        Dispatch(protocolCollector, kernel, vault, token)
-    {
+    constructor(
+        address admin,
+        address protocolCollector,
+        address kernel,
+        address vault,
+        address token,
+        uint256 initialTeamLockedTokens
+    ) Dispatch(protocolCollector, kernel, vault, token) {
         if (
             admin == address(0) || protocolCollector == address(0) || kernel == address(0) || vault == address(0)
                 || token == address(0)
@@ -47,6 +53,10 @@ contract Controller is Dispatch, AccessControl {
         _ensureTargetContract(kernel);
         _ensureTargetContract(vault);
         _ensureTargetContract(token);
+        if (initialTeamLockedTokens > TOKEN.totalSupply()) revert Controller__InvalidTeamLockedTokens();
+        if (initialTeamLockedTokens != 0) {
+            KERNEL.updateState(Slots.TEAM_LOCKED_TOKENS_SLOT, bytes32(initialTeamLockedTokens));
+        }
 
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
         _grantRole(EXECUTOR_ROLE, admin);

@@ -7,6 +7,7 @@ interface IControllerFactory {
         address kernel;
         address vault;
         address token;
+        address teamLocker;
     }
 
     struct LaunchConfig {
@@ -14,6 +15,7 @@ interface IControllerFactory {
         string tokenSymbol;
         address preMineAddress;
         uint256 preMineAmount;
+        uint256 teamTokenAmount;
         uint256 maxSupply;
     }
 
@@ -22,6 +24,7 @@ interface IControllerFactory {
         address kernel;
         address vault;
         address token;
+        address teamLocker;
     }
 
     event Enten__ControllerCreated(
@@ -31,10 +34,12 @@ interface IControllerFactory {
         address controller,
         address vault,
         address kernel,
-        address token
+        address token,
+        address teamLocker
     );
 
     error ControllerFactory__ZeroAddress();
+    error ControllerFactory__InvalidLaunchConfig();
     error ControllerFactory__InvalidDeployment();
     error ControllerFactory__InvalidCreationCodeStore();
     error CREATE3__EmptyCreationCode();
@@ -46,13 +51,14 @@ interface IControllerFactory {
     function KERNEL_CODE_STORE() external view returns (address);
     function VAULT_CODE_STORE() external view returns (address);
     function TOKEN_CODE_STORE() external view returns (address);
+    function TEAM_LOCKER_CODE_STORE() external view returns (address);
 
     function controllers(uint256 index) external view returns (address);
     function controllersByIndex(uint256 index) external view returns (address);
     function deploymentForController(address controller)
         external
         view
-        returns (address controller_, address kernel, address vault, address token);
+        returns (address controller_, address kernel, address vault, address token, address teamLocker);
     function totalControllers() external view returns (uint256);
 
     function launchController(address admin, bytes32 salt, LaunchConfig calldata config)

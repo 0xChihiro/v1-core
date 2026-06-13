@@ -114,6 +114,9 @@ interface IController is IAccessControl {
     event Controller__SettlementPauseUpdated(bool paused);
     event Controller__ModuleDisableUpdated(Keycode indexed module, bool disabled);
 
+    error Controller__InvalidAsset();
+    error Controller__ZeroReceiptLength();
+    error Controller__ZeroAssetsLength();
     error Controller__StateUpdatesOnly();
     error Controller__NoUpdatesGiven();
     error Controller__DifferentBackingLengths();
@@ -135,6 +138,7 @@ interface IController is IAccessControl {
     error Controller__ModuleDisabled(Keycode keycode);
     error Controller__MintPermissionDenied();
     error Controller__InvalidStateUpdate();
+    error Controller__InvalidTeamLockedTokens();
     error Controller__Locked();
     error InvalidKeycode(Keycode keycode);
     error TargetNotAContract(address target);

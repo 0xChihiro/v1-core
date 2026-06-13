@@ -53,7 +53,7 @@ abstract contract Dispatch is IController {
         for (uint256 i = 0; i < settlements.length;) {
             Settlement calldata settlement = settlements[i];
             (IVault.TransferCall[] memory transferCalls, IVault.CreditCall[] memory creditCalls) =
-                _dispatchSettlement(settlement, moduleKeycode);
+                _dispatchSettlement(settlement, moduleKeycode, assets);
             unchecked {
                 i++;
             }
@@ -77,7 +77,7 @@ abstract contract Dispatch is IController {
         VAULT.validateBalances(assets);
     }
 
-    function _dispatchSettlement(Settlement calldata settlement, Keycode moduleKeycode)
+    function _dispatchSettlement(Settlement calldata settlement, Keycode moduleKeycode, address[] memory assets)
         internal
         returns (IVault.TransferCall[] memory transferCalls, IVault.CreditCall[] memory creditCalls)
     {
@@ -99,7 +99,7 @@ abstract contract Dispatch is IController {
                     transferCalls = _buildClaimOrRedeemCalls(settlement.receipts, settlement.payer, false);
                 } else {
                     if (!mintPermissions[moduleKeycode]) revert Controller__MintPermissionDenied();
-                    (transferCalls, creditCalls) = _buildPaymentCalls(settlement.receipts, settlement.payer);
+                    (transferCalls, creditCalls) = _buildPaymentCalls(settlement.receipts, settlement.payer, assets);
                     TOKEN.mint(settlement.payer, settlement.amount);
                 }
             }
@@ -264,54 +264,69 @@ abstract contract Dispatch is IController {
         }
     }
 
-    function _buildPaymentCalls(Receipt[] calldata receipts, address payer)
+    function _buildPaymentCalls(Receipt[] calldata receipts, address payer, address[] memory assets)
         internal
         view
         returns (IVault.TransferCall[] memory transferCalls, IVault.CreditCall[] memory creditCalls)
     {
+        if (receipts.length == 0) revert Controller__ZeroReceiptLength();
+        if (assets.length == 0) revert Controller__ZeroAssetsLength();
+        _validateAssets(receipts, assets);
         uint256 teamBps = uint256(KERNEL.viewData(Slots.TEAM_PERCENTAGE_SLOT));
         uint256 treasuryBps = uint256(KERNEL.viewData(Slots.TREASURY_PERCENTAGE_SLOT));
 
         transferCalls = new IVault.TransferCall[](receipts.length * 2);
         creditCalls = new IVault.CreditCall[](receipts.length * 2);
         for (uint256 i = 0; i < receipts.length;) {
-            uint256 protocolFee = _mulDivUp(receipts[i].amount, AUCTION_FEE_BPS, BPS);
-            uint256 netAmount = receipts[i].amount - protocolFee;
-            uint256 teamAmount = netAmount * teamBps / BPS;
-            uint256 treasuryAmount = netAmount * treasuryBps / BPS;
-            uint256 backingAmount = netAmount - teamAmount - treasuryAmount;
             uint256 offset = i * 2;
-
-            transferCalls[offset] = IVault.TransferCall({
-                callType: IVault.TransferType.Receive,
-                toBucket: IVault.Bucket.Treasury,
-                fromBucket: IVault.Bucket.None,
-                asset: receipts[i].asset,
-                user: payer,
-                amount: receipts[i].amount
-            });
-
-            transferCalls[offset + 1] = IVault.TransferCall({
-                callType: IVault.TransferType.Send,
-                toBucket: IVault.Bucket.None,
-                fromBucket: IVault.Bucket.Treasury,
-                asset: receipts[i].asset,
-                user: PROTOCOL_COLLECTOR,
-                amount: protocolFee
-            });
-
-            creditCalls[offset] = IVault.CreditCall({
-                from: IVault.Bucket.Treasury, to: IVault.Bucket.Redeem, asset: receipts[i].asset, amount: backingAmount
-            });
-
-            creditCalls[offset + 1] = IVault.CreditCall({
-                from: IVault.Bucket.Treasury, to: IVault.Bucket.Team, asset: receipts[i].asset, amount: teamAmount
-            });
+            _setPaymentCalls(transferCalls, creditCalls, offset, receipts[i], payer, teamBps, treasuryBps);
 
             unchecked {
                 i++;
             }
         }
+    }
+
+    function _setPaymentCalls(
+        IVault.TransferCall[] memory transferCalls,
+        IVault.CreditCall[] memory creditCalls,
+        uint256 offset,
+        Receipt calldata receipt,
+        address payer,
+        uint256 teamBps,
+        uint256 treasuryBps
+    ) internal view {
+        uint256 protocolFee = _mulDivUp(receipt.amount, AUCTION_FEE_BPS, BPS);
+        uint256 netAmount = receipt.amount - protocolFee;
+        uint256 teamAmount = netAmount * teamBps / BPS;
+        uint256 treasuryAmount = netAmount * treasuryBps / BPS;
+        uint256 backingAmount = netAmount - teamAmount - treasuryAmount;
+
+        transferCalls[offset] = IVault.TransferCall({
+            callType: IVault.TransferType.Receive,
+            toBucket: IVault.Bucket.Treasury,
+            fromBucket: IVault.Bucket.None,
+            asset: receipt.asset,
+            user: payer,
+            amount: receipt.amount
+        });
+
+        transferCalls[offset + 1] = IVault.TransferCall({
+            callType: IVault.TransferType.Send,
+            toBucket: IVault.Bucket.None,
+            fromBucket: IVault.Bucket.Treasury,
+            asset: receipt.asset,
+            user: PROTOCOL_COLLECTOR,
+            amount: protocolFee
+        });
+
+        creditCalls[offset] = IVault.CreditCall({
+            from: IVault.Bucket.Treasury, to: IVault.Bucket.Redeem, asset: receipt.asset, amount: backingAmount
+        });
+
+        creditCalls[offset + 1] = IVault.CreditCall({
+            from: IVault.Bucket.Treasury, to: IVault.Bucket.Team, asset: receipt.asset, amount: teamAmount
+        });
     }
 
     function _buildDeployOrRecallCalls(Receipt[] calldata receipts, address target, bool deploy)
@@ -399,11 +414,6 @@ abstract contract Dispatch is IController {
         returns (uint256 totalSupply, uint256[] memory backing)
     {
         totalSupply = TOKEN.totalSupply() - uint256(KERNEL.viewData(Slots.TEAM_LOCKED_TOKENS_SLOT));
-        if (totalSupply == 0) {
-            backing = new uint256[](0);
-            return (totalSupply, backing);
-        }
-
         backing = new uint256[](assets.length);
 
         for (uint256 i = 0; i < assets.length;) {
@@ -418,6 +428,29 @@ abstract contract Dispatch is IController {
         }
     }
 
+    function _validateAssets(IController.Receipt[] memory requestedAssets, address[] memory assets) internal pure {
+        for (uint256 i; i < requestedAssets.length;) {
+            bool found;
+
+            for (uint256 j; j < assets.length;) {
+                if (requestedAssets[i].asset == assets[j]) {
+                    found = true;
+                    break;
+                }
+
+                unchecked {
+                    ++j;
+                }
+            }
+
+            if (!found) revert Controller__InvalidAsset();
+
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
     function _validateBacking(
         uint256 startingSupply,
         uint256[] memory start,
@@ -426,6 +459,21 @@ abstract contract Dispatch is IController {
     ) internal pure {
         if (start.length == 0) return;
         if (start.length != end.length) revert Controller__DifferentBackingLengths();
+
+        if (startingSupply == 0) {
+            if (endingSupply == 0) return;
+
+            for (uint256 i = 0; i < end.length;) {
+                if (end[i] < endingSupply) revert Controller__BackingWentDown();
+
+                unchecked {
+                    i++;
+                }
+            }
+
+            return;
+        }
+
         for (uint256 i = 0; i < start.length;) {
             uint256 requiredEndingBacking = Math.mulDiv(start[i], endingSupply, startingSupply);
             if (mulmod(start[i], endingSupply, startingSupply) != 0) {

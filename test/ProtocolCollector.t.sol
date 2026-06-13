@@ -39,7 +39,7 @@ contract ProtocolCollectorTest is Test {
         kernel = new Kernel(predictedController, predictedVault);
         vault = new Vault(predictedController, predictedKernel);
         token = new Token("Enten", "ENTEN", predictedController, user, INITIAL_SUPPLY, type(uint256).max);
-        controller = new Controller(admin, predictedCollector, predictedKernel, predictedVault, predictedToken);
+        controller = new Controller(admin, predictedCollector, predictedKernel, predictedVault, predictedToken, 0);
         asset = new ERC20Mock();
     }
 

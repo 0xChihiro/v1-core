@@ -11,6 +11,7 @@ import {Controller} from "../../src/Controller.sol";
 import {Kernel} from "../../src/Kernel.sol";
 import {Vault} from "../../src/Vault.sol";
 import {Token} from "../../src/Token.sol";
+import {TeamLocker} from "../../src/TeamLocker.sol";
 
 contract LaunchCreationCodeScript is Script {
     function run() public {
@@ -22,9 +23,14 @@ contract LaunchCreationCodeScript is Script {
         address kernelCodeStore = address(new CreationCodeStore(type(Kernel).creationCode));
         address vaultCodeStore = address(new CreationCodeStore(type(Vault).creationCode));
         address tokenCodeStore = address(new CreationCodeStore(type(Token).creationCode));
+        address teamLockerCodeStore = address(new CreationCodeStore(type(TeamLocker).creationCode));
 
         IControllerFactory.CreationCodeStores memory codeStores = IControllerFactory.CreationCodeStores({
-            controller: controllerCodeStore, kernel: kernelCodeStore, vault: vaultCodeStore, token: tokenCodeStore
+            controller: controllerCodeStore,
+            kernel: kernelCodeStore,
+            vault: vaultCodeStore,
+            token: tokenCodeStore,
+            teamLocker: teamLockerCodeStore
         });
 
         address factory = address(new ControllerFactory(collector, codeStores));

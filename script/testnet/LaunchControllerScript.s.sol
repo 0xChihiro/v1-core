@@ -24,6 +24,7 @@ contract LaunchControllerScript is Script {
             tokenSymbol: "ENTEN",
             preMineAddress: admin,
             preMineAmount: 3_000_000e18,
+            teamTokenAmount: 0,
             maxSupply: 10_000_000e18
         });
 
@@ -37,5 +38,6 @@ contract LaunchControllerScript is Script {
         console.log("Kernel:", deployments.kernel);
         console.log("Vault:", deployments.vault);
         console.log("Token:", deployments.token);
+        console.log("TeamLocker:", deployments.teamLocker);
     }
 }

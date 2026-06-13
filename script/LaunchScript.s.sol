@@ -10,6 +10,7 @@ import {IControllerFactory} from "../src/interfaces/IControllerFactory.sol";
 import {ProtocolCollector} from "../src/ProtocolCollector.sol";
 import {Kernel} from "../src/Kernel.sol";
 import {Token} from "../src/Token.sol";
+import {TeamLocker} from "../src/TeamLocker.sol";
 import {Vault} from "../src/Vault.sol";
 
 contract LaunchScript is Script {
@@ -22,7 +23,8 @@ contract LaunchScript is Script {
             controller: address(new CreationCodeStore(type(Controller).creationCode)),
             kernel: address(new CreationCodeStore(type(Kernel).creationCode)),
             vault: address(new CreationCodeStore(type(Vault).creationCode)),
-            token: address(new CreationCodeStore(type(Token).creationCode))
+            token: address(new CreationCodeStore(type(Token).creationCode)),
+            teamLocker: address(new CreationCodeStore(type(TeamLocker).creationCode))
         });
 
         ControllerFactory factory = new ControllerFactory(protocolCollector, codeStores);
@@ -35,6 +37,7 @@ contract LaunchScript is Script {
             tokenSymbol: "ENTEN",
             preMineAddress: admin,
             preMineAmount: 3_500_000e18,
+            teamTokenAmount: 0,
             maxSupply: 10_000_000e18
         });
 
@@ -48,5 +51,6 @@ contract LaunchScript is Script {
         console.log(deployments.kernel);
         console.log(deployments.vault);
         console.log(deployments.token);
+        console.log(deployments.teamLocker);
     }
 }
